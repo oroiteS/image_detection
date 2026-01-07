@@ -1,0 +1,100 @@
+name: CI - Multi-Language Project
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+    branches: ["main", "master"]
+
+jobs:
+  python-syntax-check:
+    name: Python Syntax Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Install flake8 with uv
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          uv pip install --system flake8
+
+      - name: Check Python syntax in backend/python
+        run: |
+          flake8 backend/python --count --select=E9,F63,F7,F82 --show-source --statistics
+
+  cpp-check:
+    name: C++ Build & Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ cmake cppcheck
+
+      - name: Verify g++ installation
+        run: g++ --version
+
+      - name: Run Cppcheck on backend/cpp
+        run: |
+          cppcheck --enable=all --inconclusive \
+          --language=c++ --std=c++17 \
+          --suppress=missingIncludeSystem \
+          backend/cpp/src backend/cpp/include || true
+
+  frontend-build:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install Dependencies
+        working-directory: ./frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Check
+        working-directory: ./frontend
+        run: pnpm run build
+
+  structure-validation:
+    name: Project Structure Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate directory structure
+        run: |
+          echo "Checking project structure..."
+          test -d backend/python || (echo "❌ backend/python not found" && exit 1)
+          test -d backend/cpp || (echo "❌ backend/cpp not found" && exit 1)
+          test -d frontend || (echo "❌ frontend not found" && exit 1)
+          test -f backend/python/pyproject.toml || (echo "❌ backend/python/pyproject.toml not found" && exit 1)
+          test -f backend/cpp/CMakeLists.txt || (echo "❌ backend/cpp/CMakeLists.txt not found" && exit 1)
+          test -f frontend/package.json || (echo "❌ frontend/package.json not found" && exit 1)
+          echo "✅ Project structure is valid"
+
