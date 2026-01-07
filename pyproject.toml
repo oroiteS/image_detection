@@ -1,0 +1,37 @@
+[project]
+name = "image-detection"
+version = "0.1.0"
+description = "电力巡检图像智能检测系统"
+readme = "README.md"
+# 关键点1：严格限制 Python 版本为 3.10，避免解析 3.13 时报错
+requires-python = ">=3.10, <3.11"
+
+# 关键点2：列出所有依赖
+dependencies = [
+    "fastapi",
+    "gradio",
+    "uvicorn",
+    "ultralytics",
+    "onnx",
+    "onnxsim",
+    "netron",
+    "opencv-python",
+    "matplotlib",
+    "pandas",
+    "pybind11",
+    "torch",        # 这里只写名字
+    "torchvision",
+    "torchaudio",
+]
+
+# 关键点3：定义 PyTorch 的专用源 (CUDA 12.1)
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
+
+# 关键点4：明确告诉 uv，这三个包要去 pytorch 源下载
+[tool.uv.sources]
+torch = [{ index = "pytorch" }]
+torchvision = [{ index = "pytorch" }]
+torchaudio = [{ index = "pytorch" }]
