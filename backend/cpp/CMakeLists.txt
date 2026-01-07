@@ -33,3 +33,13 @@ target_link_libraries(inference_test
     CUDA::cudart 
     ${TRT_LIBS}
 )
+
+# --- 添加新的测试环境目标 ---
+add_executable(env_check src/TestEnv.cpp)
+
+# 也要为这个新目标链接库，否则它找不到 OpenCV 和 CUDA
+target_link_libraries(env_check 
+    ${OpenCV_LIBS} 
+    CUDA::cudart 
+    ${TRT_LIBS}
+)
