@@ -7,7 +7,7 @@ int main()
 {
     SetConsoleOutputCP(65001); // 解决乱码
 
-    std::cout << "电力巡检系统环境检测" << std::endl;
+    std::cout << "--- 电力巡检系统环境检测 ---" << std::endl;
 
     // 1. GPU 硬件检测
     int deviceCount = 0;
