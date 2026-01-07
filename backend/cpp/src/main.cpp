@@ -21,7 +21,5 @@ int main()
     std::cout << "TensorRT 版本: " << NV_TENSORRT_MAJOR << "." << NV_TENSORRT_MINOR << std::endl;
     // ... 其他代码 ...
     std::cout << "End of test." << std::endl;
-    // system("pause"); // 这一行能强制让窗口停住
-
     return 0;
 }
