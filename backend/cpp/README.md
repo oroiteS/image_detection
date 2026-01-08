@@ -6,11 +6,17 @@
 
 ```
 backend/cpp/
-├── src/              # 源代码
-├── include/          # 头文件
-├── tests/            # 单元测试
-├── build/            # 构建目录
-└── CMakeLists.txt    # CMake配置
+├── CMakeLists.txt            # 项目构建配置
+├── include/                  # 头文件
+│   ├── logging.hpp           # TensorRT 日志类
+│   ├── engine.hpp             # 推理引擎类定义
+│   └── utils.hpp             # OpenCV 图像处理工具
+├── src/                      # 源文件
+│   ├── main.cpp              # 最小化测试主程序
+│   ├── engine.cpp             # TensorRT 构建与推理实现
+│   └── preprocess.cu         # CUDA 预处理/后处理融合算子
+└── models/                   # 存放模型
+    └── power_inspection.onnx # 你的原始 ONNX 模型
 ```
 
 ## 构建
@@ -25,9 +31,9 @@ cd backend/cpp
 ./env_check.exe
 ```
 
-- MSVC C++17
+- 2022 MSVC
 - CMake 3.20+
-- CUDA Toolkit 11.8（根据自己的显卡情况选择）
+- CUDA Toolkit 12.1（根据自己的显卡情况选择）
 - TensorRT 8.6 GA
 - OpenCV 4.8.0 / 4.9.0
 
