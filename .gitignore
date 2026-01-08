@@ -29,18 +29,34 @@ env/
 ENV/
 .env
 .venv
+.pdm-python
+.pdm-build/
+__pypackages__/
+
+# Unit test / coverage reports
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+htmlcov/
+
+# Type checkers
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
 
 # ==========================
 # C++ / CUDA / CMake
 # ==========================
-# CMake build directories
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
 Makefile
 install_manifest.txt
-
-# Compilation outputs
 *.o
 *.obj
 *.lib
@@ -48,29 +64,25 @@ install_manifest.txt
 *.dylib
 *.exe
 bin/
-lib/
 
-# IDE specific (VS Code / Visual Studio / CLion)
+# IDE specific
 .vscode/
 .idea/
 *.sln
 *.vcxproj
 *.vcxproj.user
 .vs/
+.spyderproject
+.spyproject
+.ropeproject
 
 # ==========================
 # Deep Learning Models & Checkpoints
 # ==========================
-# Ignore large model weights to avoid exceeding GitHub file size limits
-# PyTorch
 *.pt
 *.pth
 *.ckpt
-
-# ONNX 
 *.onnx
-
-# TensorRT Engines 
 *.engine
 *.trt
 *.plan
@@ -79,19 +91,11 @@ lib/
 # ==========================
 # Project Specific & Data
 # ==========================
-# YOLO training logs and outputs [cite: 9]
 runs/
 wandb/
-
-# Datasets - prevent uploading large image datasets 
-data/images/
-data/labels/
 datasets/
-# Exception: You might want to keep a small 'samples' folder
-!data/samples/
-
-# LabelImg generated classes file (optional, often auto-generated)
-classes.txt
+# Exception: keep a small 'samples' folder if needed
+!**/datasets/samples/
 
 # ==========================
 # OS Generated Files

@@ -1,60 +1,25 @@
 # 电力巡检图像智能检测系统 (Image Detection)
 
-本项目是一个基于 YOLO 的电力巡检图像智能检测系统，采用前后端分离架构，后端支持 Python 和 C++ 混合开发。
+本项目是一个基于 YOLO 的电力巡检图像智能检测系统，采用前后端分离架构。
 
-## 项目结构
+## 🚀 快速环境配置 (Python Backend)
 
-```
-id/
-├── backend/
-│   ├── python/          # Python后端 (YOLO训练、API服务)
-│   └── cpp/             # C++后端 (高性能推理)
-├── frontend/            # 前端界面
-├── .github/
-│   └── workflows/       # CI/CD配置
-├── pyproject.toml       # 项目配置
-└── README.md
-```
-
-## 快速开始
-
-### Python Backend
+推荐使用 `uv` 进行包管理，以快速安装支持 CUDA 12.1 的 PyTorch 环境：
 
 ```bash
 cd backend/python
+
+# 1. 同步环境 (自动安装所有依赖)
 uv sync
-uv run python -m image_detection.utils.verify_env
+
+# 2. 如果需要手动更新 PyTorch (CUDA 12.1)
+uv add torch torchvision torchaudio --index pytorch
 ```
 
-### C++ Backend
+## 📂 项目结构
 
-```bash
-cd backend/cpp
-mkdir -p build && cd build
-cmake -DCMAKE_CXX_COMPILER=g++ ..
-make
-```
+- `backend/python/`: YOLO 训练、API 服务及 Web 交互界面。
+- `backend/cpp/`: 高性能推理实现。
+- `frontend/`: 系统前端展示。
 
-### Frontend
-
-```bash
-cd frontend
-pnpm install
-pnpm dev
-```
-
-## 技术栈
-
-- **Python Backend**: PyTorch, Ultralytics YOLO, FastAPI, Gradio (包管理: uv)
-- **C++ Backend**: C++17, CMake, g++, OpenCV
-- **Frontend**: (待定) (包管理: pnpm)
-- **CI/CD**: GitHub Actions
-
-## 开发指南
-
-详细文档请查看各子项目的 README：
-- [Python Backend](./backend/python/README.md)
-- [C++ Backend](./backend/cpp/README.md)
-- [Frontend](./frontend/README.md)
-
-
+详细开发文档请参考各目录下的 `README.md`。
