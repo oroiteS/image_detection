@@ -44,14 +44,11 @@ image_detection/
 ├── src/
 │   └── image_detection/
 │       ├── core/           # 核心逻辑
-│       ├── data/           # 数据处理 (split_dataset.py, inflect.csv)
+│       ├── data/           # 数据处理 (split_dataset.py)
 │       ├── training/       # 训练逻辑 (yolo_train.py)
 │       ├── utils/          # 工具类 (verify_env.py)
 │       └── web/            # Web 界面 (app.py)
-├── tests/                  # 测试用例
 ├── datasets/               # 数据集目录
-│   ├── raw_data/           # 原始标注数据
-│   └── power_inspection/   # 划分后的数据集
 ├── runs/                   # 训练结果与权重
 ├── pyproject.toml          # 项目配置文件
 └── README.md               # 项目说明文档
@@ -59,15 +56,30 @@ image_detection/
 
 ## 📖 使用说明
 
-### 数据准备
+### 1. 数据准备
 1. 将原始图像和标注文件放入 `datasets/raw_data/`。
 2. 运行 `python src/image_detection/data/split_dataset.py` 进行数据集划分。
 
-### 模型训练
-运行 `python src/image_detection/training/yolo_train.py` 开始训练、评估或导出模型。
+### 2. 模型训练与导出
+运行 `python src/image_detection/training/yolo_train.py`。该脚本提供交互式菜单，支持：
+- 开始新训练
+- 评估模型性能 (mAP)
+- 导出为 ONNX 格式（供 C++ TensorRT 部署使用）
 
-### 运行 Web 界面
+### 3. 运行 Web 界面
 运行 `python src/image_detection/web/app.py` 启动可视化检测界面。
+
+#### 🖥️ 界面功能详解
+Web 界面提供了直观的交互工具，帮助用户评估模型效果：
+
+- **模型选择**：下拉菜单会自动扫描 `runs/detect` 目录，允许实时切换不同的训练权重（`.pt` 文件）。
+- **置信度阈值 (Confidence Threshold)**：
+  - **定义**：模型认为某个物体属于特定类别的最小概率。
+  - **影响**：调高该值会过滤掉不确定的检测结果，减少“误检”（False Positives），但可能会导致“漏检”；调低该值则相反。
+- **交并比阈值 (IoU Threshold)**：
+  - **定义**：用于非极大值抑制 (NMS) 的参数。当两个检测框的重叠面积比例超过此值时，系统会只保留置信度最高的一个。
+  - **影响**：调低该值可以更严格地消除重复的检测框；调高该值则允许在物体密集区域保留更多相互重叠的框。
+- **检测详情表**：实时列出图中检测到的所有目标类别及其精确的置信度分数。
 
 ## 🛠️ 技术栈
 

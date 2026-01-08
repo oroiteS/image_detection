@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, Form
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from ultralytics import YOLO
 import os
@@ -12,48 +12,77 @@ from PIL import Image
 
 # ================= 配置区域 =================
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-DEFAULT_MODEL = os.path.join(BASE_DIR, "weights", "yolo11n.pt")
+RUNS_DIR = os.path.join(BASE_DIR, "runs", "detect")
+DEFAULT_MODEL_PATH = os.path.join(BASE_DIR, "weights", "yolo11n.pt")
 INFLECT_CSV = os.path.join(BASE_DIR, "src", "image_detection", "data", "inflect.csv")
 
-app = FastAPI(title="电力巡检图像检测 API", version="1.0.0")
+app = FastAPI(title="电力巡检图像检测 API", version="1.1.1")
 
-# 允许跨域请求 (Vue3 开发环境必备)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 生产环境应限制为前端域名
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ================= 逻辑初始化 =================
+# ================= 状态管理 =================
 
-# 加载模型
-model = YOLO(DEFAULT_MODEL)
+class ModelManager:
+    def __init__(self):
+        self.model = YOLO(DEFAULT_MODEL_PATH)
+        self.model_name = "yolo11n (Official)"
+        self.mapping = self.load_mapping()
 
-# 加载中文映射
-def load_class_mapping():
-    mapping = {}
-    try:
-        if os.path.exists(INFLECT_CSV):
-            with open(INFLECT_CSV, mode='r', encoding='utf-8') as f:
-                reader = csv.reader(f)
-                rows = list(reader)
-                if len(rows) >= 2:
-                    en_names = rows[0][1:]
-                    cn_names = rows[1][1:]
-                    mapping = dict(zip(en_names, cn_names))
-    except Exception as e:
-        print(f"⚠️ 加载中文映射失败: {e}")
-    return mapping
+    def load_mapping(self):
+        mapping = {}
+        try:
+            if os.path.exists(INFLECT_CSV):
+                with open(INFLECT_CSV, mode='r', encoding='utf-8') as f:
+                    reader = csv.reader(f)
+                    rows = list(reader)
+                    if len(rows) >= 2:
+                        mapping = dict(zip(rows[0][1:], rows[1][1:]))
+        except Exception as e:
+            print(f"⚠️ 映射加载失败: {e}")
+        return mapping
 
-CLASS_MAP = load_class_mapping()
+    def switch_model(self, name: str, path: str):
+        try:
+            if not os.path.exists(path):
+                return False
+            self.model = YOLO(path)
+            self.model_name = name
+            return True
+        except Exception as e:
+            print(f"❌ 模型切换失败: {e}")
+            return False
+
+manager = ModelManager()
 
 # ================= API 路由 =================
 
-@app.get("/")
-async def root():
-    return {"message": "电力巡检 API 服务已启动", "status": "running"}
+@app.get("/models")
+async def list_models():
+    models = [{"name": "yolo11n (Official)", "path": DEFAULT_MODEL_PATH}]
+    if os.path.exists(RUNS_DIR):
+        for folder in os.listdir(RUNS_DIR):
+            pt_path = os.path.join(RUNS_DIR, folder, "weights", "best.pt")
+            if os.path.exists(pt_path):
+                models.append({"name": f"Custom: {folder}", "path": pt_path})
+    return models
+
+@app.post("/set_model")
+async def set_model(data: dict):
+    name = data.get("name")
+    path = data.get("path")
+    if not name or not path:
+        raise HTTPException(status_code=400, detail="参数缺失")
+    
+    success = manager.switch_model(name, path)
+    if success:
+        return {"message": f"已切换至 {name}"}
+    raise HTTPException(status_code=500, detail="模型加载失败")
 
 @app.post("/detect")
 async def detect(
@@ -61,49 +90,33 @@ async def detect(
     conf: float = Form(0.25),
     iou: float = Form(0.45)
 ):
-    """
-    接收图片并返回检测结果
-    """
     start_time = time.time()
-    
-    # 1. 读取上传的图片
     contents = await file.read()
     image = Image.open(io.BytesIO(contents)).convert("RGB")
     img_array = np.array(image)
     
-    # 2. YOLO 推理
-    results = model.predict(source=img_array, conf=conf, iou=iou)
+    results = manager.model.predict(source=img_array, conf=conf, iou=iou)
     inference_time = (time.time() - start_time) * 1000
     
-    # 3. 解析结果
     detections = []
     for box in results[0].boxes:
         cls_id = int(box.cls[0])
-        conf_score = float(box.conf[0])
-        en_name = model.names[cls_id]
-        cn_name = CLASS_MAP.get(en_name, en_name)
-        
-        # 坐标 [x1, y1, x2, y2]
-        coords = box.xyxy[0].tolist()
-        
+        en_name = manager.model.names[cls_id]
         detections.append({
-            "class_en": en_name,
-            "class_cn": cn_name,
-            "confidence": round(conf_score, 2),
-            "bbox": [round(x, 1) for x in coords]
+            "class_cn": manager.mapping.get(en_name, en_name),
+            "confidence": float(box.conf[0]),
+            "bbox": [round(x, 1) for x in box.xyxy[0].tolist()]
         })
     
-    # 4. 生成带框的结果图 (Base64 编码)
     res_plotted = results[0].plot()
-    # YOLO 返回 BGR，转为 RGB 再转为 JPEG
-    res_rgb = cv2.cvtColor(res_plotted, cv2.COLOR_BGR2RGB)
-    _, buffer = cv2.imencode(".jpg", cv2.cvtColor(res_rgb, cv2.COLOR_RGB2BGR))
+    # YOLO plot() 返回 BGR，cv2.imencode 需要 BGR，所以直接编码即可
+    _, buffer = cv2.imencode(".jpg", res_plotted)
     img_base64 = base64.b64encode(buffer).decode("utf-8")
     
     return {
         "success": True,
+        "model_used": manager.model_name,
         "inference_time_ms": round(inference_time, 1),
-        "count": len(detections),
         "detections": detections,
         "image_base64": f"data:image/jpeg;base64,{img_base64}"
     }
