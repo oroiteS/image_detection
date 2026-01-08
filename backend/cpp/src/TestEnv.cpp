@@ -3,7 +3,7 @@
 #include <opencv2/opencv.hpp>
 #include <windows.h>
 
-int main()
+void verify_env()
 {
     SetConsoleOutputCP(65001); // 解决乱码
 
@@ -14,7 +14,7 @@ int main()
     cudaError_t cudaStatus = cudaGetDeviceCount(&deviceCount);
     if (cudaStatus != cudaSuccess) {
         std::cerr << "CUDA 初始化失败: " << cudaGetErrorString(cudaStatus) << std::endl;
-        return -1;
+        return;
     }
 
     // 2. 显存压力简单测试
@@ -32,5 +32,5 @@ int main()
     cv::imshow("Check", test_img);
     cv::waitKey(0);
 
-    return 0;
+    return;
 }
