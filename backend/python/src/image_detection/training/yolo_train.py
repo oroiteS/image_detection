@@ -16,8 +16,8 @@ RUNS_DIR = os.path.join(BASE_DIR, "runs", "detect")
 WEIGHTS_DIR = os.path.join(BASE_DIR, "weights")
 
 # 训练参数
-MODEL_TYPE = os.path.join(WEIGHTS_DIR, "yolo11n.pt")
-EPOCHS = 50
+MODEL_TYPE = os.path.join(WEIGHTS_DIR, "yolo11l.pt")
+EPOCHS = 500
 BATCH_SIZE = 16
 IMG_SIZE = 640
 DEVICE = 0
