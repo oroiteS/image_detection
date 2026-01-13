@@ -107,6 +107,7 @@ bin/
 runs/
 wandb/
 datasets/
+temp/
 # Exception: keep a small 'samples' folder if needed
 !**/datasets/samples/
 
