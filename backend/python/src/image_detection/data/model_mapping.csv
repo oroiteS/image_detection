@@ -1,6 +1,11 @@
 folder_name,display_name
 train,yolo_v11_large_300epochs
-train,yolo_v11_large_500epochs
+train2,yolo_v11_large_500epochs
 train4,yolo_v11_medium_50epochs
 train6,yolo_v11_medium_200epochs
 train8,yolo_v11_medium_300epochs
+model,yolo_v11_large_300epochs_int8
+model2,yolo_v11_large_500epochs_int8
+model4,yolo_v11_medium_50epochs_int8
+model6,yolo_v11_medium_200epochs_int8
+model8,yolo_v11_medium_300epochs_int8

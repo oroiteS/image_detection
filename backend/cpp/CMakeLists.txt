@@ -1,53 +1,78 @@
-cmake_minimum_required(VERSION 3.15)
-project(ImageDetection VERSION 0.1.0 LANGUAGES CXX CUDA)
+cmake_minimum_required(VERSION 3.14)
+project(ImageDetection LANGUAGES CXX CUDA)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Find OpenCV
+# 关键修复：设置 CUDA 架构
+# 75=Turing(20系), 80=Ampere(30系), 86=Ampere(30系), 89=Ada(40系)
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+  set(CMAKE_CUDA_ARCHITECTURES "75;80;86;89")
+endif()
+
+# ==========================================
+# 依赖查找
+# ==========================================
 find_package(OpenCV REQUIRED)
-message(STATUS "OpenCV found: ${OpenCV_DIR}")
+find_package(CUDAToolkit REQUIRED)
 
-# Find CUDA
-find_package(CUDA REQUIRED)
-message(STATUS "CUDA found: ${CUDA_TOOLKIT_ROOT_DIR}")
+find_library(NVINFER_LIB nvinfer)
+find_library(NVONNXPARSER_LIB nvonnxparser)
 
-# TensorRT Configuration
-if(DEFINED ENV{TENSORRT_ROOT} AND NOT DEFINED TENSORRT_ROOT)
-    set(TENSORRT_ROOT $ENV{TENSORRT_ROOT})
-endif()
+# ==========================================
+# Pybind11 集成
+# ==========================================
+include(FetchContent)
+FetchContent_Declare(
+  pybind11
+  GIT_REPOSITORY https://github.com/pybind/pybind11.git
+  GIT_TAG        v2.11.1
+)
+FetchContent_MakeAvailable(pybind11)
 
-if(DEFINED TENSORRT_ROOT)
-    include_directories(${TENSORRT_ROOT}/include)
-    link_directories(${TENSORRT_ROOT}/lib)
-endif()
+# ==========================================
+# 核心源文件列表
+# ==========================================
+set(CORE_SOURCES
+    src/ObjectDetector.cpp
+    src/Int8Calibrator.cpp
+    src/cuda/postprocess.cu
+)
 
-# Find TensorRT libraries
-find_library(NVINFER_LIB nvinfer HINTS ${TENSORRT_ROOT}/lib ${TENSORRT_ROOT}/lib64)
-find_library(NVPARSERS_LIB nvparsers HINTS ${TENSORRT_ROOT}/lib ${TENSORRT_ROOT}/lib64)
-find_library(NVONNXPARSER_LIB nvonnxparser HINTS ${TENSORRT_ROOT}/lib ${TENSORRT_ROOT}/lib64)
+# ==========================================
+# 可执行文件 (C++ 测试用)
+# ==========================================
+add_executable(ImageDetection src/main.cpp ${CORE_SOURCES})
 
-if (NOT NVINFER_LIB OR NOT NVPARSERS_LIB OR NOT NVONNXPARSER_LIB)
-    message(WARNING "TensorRT libraries not found.")
-endif()
+target_include_directories(ImageDetection PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${OpenCV_INCLUDE_DIRS}
+    ${CUDAToolkit_INCLUDE_DIRS}
+)
 
-# Include directories
-include_directories(include)
-include_directories(${OpenCV_INCLUDE_DIRS})
-include_directories(${CUDA_INCLUDE_DIRS})
-
-# Source files
-file(GLOB_RECURSE CXX_SOURCES "src/*.cpp")
-file(GLOB_RECURSE CUDA_SOURCES "src/cuda/*.cu")
-
-# Create executable
-add_executable(${PROJECT_NAME} ${CXX_SOURCES} ${CUDA_SOURCES})
-
-# Link libraries
-target_link_libraries(${PROJECT_NAME}
+target_link_libraries(ImageDetection PRIVATE
     ${OpenCV_LIBS}
-    ${CUDA_LIBRARIES}
+    CUDA::cudart
     ${NVINFER_LIB}
-    ${NVPARSERS_LIB}
     ${NVONNXPARSER_LIB}
 )
+
+# ==========================================
+# Python 扩展模块 (Pybind11)
+# ==========================================
+pybind11_add_module(image_detection_cpp src/bindings.cpp ${CORE_SOURCES})
+
+target_include_directories(image_detection_cpp PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${OpenCV_INCLUDE_DIRS}
+    ${CUDAToolkit_INCLUDE_DIRS}
+)
+
+target_link_libraries(image_detection_cpp PRIVATE
+    ${OpenCV_LIBS}
+    CUDA::cudart
+    ${NVINFER_LIB}
+    ${NVONNXPARSER_LIB}
+)
+
+set_target_properties(image_detection_cpp PROPERTIES PREFIX "${PYTHON_MODULE_PREFIX}")

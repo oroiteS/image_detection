@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { ref, onMounted, computed, onUnmounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import axios from 'axios'
 
+// ================= 类型定义 =================
 interface Detection {
   class_cn: string
   confidence: number
   bbox: number[]
+  dimensions?: string
 }
 
 interface Model {
@@ -13,173 +15,54 @@ interface Model {
   path: string
 }
 
-interface HistoryItem {
-  id: string
-  timestamp: string
-  originalImage: string
-  resultImage: string
-  model: string
-  count: number
-  time: number
+interface BatchResult {
+  filename: string
   detections: Detection[]
+  image_base64: string
 }
 
-// --- Navigation State ---
-const currentView = ref<'detect' | 'history'>('detect')
+// ================= 状态管理 =================
+const currentTab = ref<'detect' | 'compare'>('detect')
 
-// --- Detection State ---
-const selectedFile = ref<File | null>(null)
+const selectedFiles = ref<FileList | null>(null)
 const previewUrl = ref<string | null>(null)
 const resultImage = ref<string | null>(null)
 const detections = ref<Detection[]>([])
 const loading = ref(false)
 const stats = ref({ time: 0, count: 0, model: '' })
 
+// 批量模式
+const isBatchMode = ref(false)
+const batchResults = ref<BatchResult[]>([])
+const currentBatchIndex = ref(0)
+
+// 模型列表
 const availableModels = ref<Model[]>([])
 const selectedModel = ref<string>('yolo11n (Official)')
+
+// 对比模式状态
+const compareModelA = ref<string>('')
+const compareModelB = ref<string>('')
+const compareResultA = ref<string | null>(null)
+const compareResultB = ref<string | null>(null)
+const compareStatsA = ref({ time: 0, count: 0 })
+const compareStatsB = ref({ time: 0, count: 0 })
+const compareLoading = ref(false)
 
 const confFilter = ref(0.25)
 const filteredDetections = computed(() => {
   return detections.value.filter(d => d.confidence >= confFilter.value)
 })
 
-// --- History Logic ---
-const history = ref<HistoryItem[]>([])
-const itemsPerPage = 7
-const currentPage = ref(1)
-
-const totalPages = computed(() => Math.ceil(history.value.length / itemsPerPage))
-const paginatedHistory = computed(() => {
-  const start = (currentPage.value - 1) * itemsPerPage
-  const end = start + itemsPerPage
-  return history.value.slice(start, end)
-})
-
-const loadHistory = () => {
-  const saved = localStorage.getItem('power_vision_history')
-  if (saved) history.value = JSON.parse(saved)
-}
-
-const saveHistory = () => {
-  try {
-    localStorage.setItem('power_vision_history', JSON.stringify(history.value))
-  } catch (e) {
-    console.warn('Storage quota exceeded, removing oldest item...')
-    if (history.value.length > 1) {
-      history.value.pop()
-      saveHistory()
-    }
-  }
-}
-
-const addToHistory = (item: Omit<HistoryItem, 'id' | 'timestamp'>) => {
-  const newItem: HistoryItem = {
-    ...item,
-    id: Date.now().toString(),
-    timestamp: new Date().toLocaleString()
-  }
-  history.value.unshift(newItem)
-  if (history.value.length > 50) history.value.pop() // 压缩后可以存更多，设为50条
-  saveHistory()
-}
-
-const clearHistory = () => {
-  if (confirm('确定要清空所有历史记录吗？')) {
-    history.value = []
-    currentPage.value = 1
-    saveHistory()
-  }
-}
-
-const viewHistoryItem = (item: HistoryItem) => {
-  previewUrl.value = item.originalImage
-  resultImage.value = item.resultImage
-  detections.value = item.detections
-  stats.value = {
-    time: item.time,
-    count: item.count,
-    model: item.model
-  }
-  selectedModel.value = item.model
-  currentView.value = 'detect'
-}
-
-// --- Utils: Image Compression ---
-const compressImage = (base64: string, maxWidth = 800): Promise<string> => {
-  return new Promise((resolve) => {
-    const img = new Image()
-    img.src = base64
-    img.onload = () => {
-      const canvas = document.createElement('canvas')
-      let width = img.width
-      let height = img.height
-      if (width > maxWidth) {
-        height = (maxWidth / width) * height
-        width = maxWidth
-      }
-      canvas.width = width
-      canvas.height = height
-      const ctx = canvas.getContext('2d')
-      ctx?.drawImage(img, 0, 0, width, height)
-      resolve(canvas.toDataURL('image/jpeg', 0.7))
-    }
-  })
-}
-
-const fileToBase64 = (file: File): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.readAsDataURL(file)
-    reader.onload = () => resolve(reader.result as string)
-    reader.onerror = error => reject(error)
-  })
-}
-
-// --- Image Preview & Zoom Logic ---
-const isModalOpen = ref(false)
-const modalImageUrl = ref('')
-const zoomLevel = ref(1)
-
-const openModal = (url: string) => {
-  modalImageUrl.value = url
-  isModalOpen.value = true
-  zoomLevel.value = 1
-  document.body.style.overflow = 'hidden'
-}
-
-const closeModal = () => {
-  isModalOpen.value = false
-  document.body.style.overflow = ''
-}
-
-const handleZoom = (delta: number) => {
-  const newZoom = zoomLevel.value + delta
-  if (newZoom >= 0.5 && newZoom <= 5) {
-    zoomLevel.value = newZoom
-  }
-}
-
-const onWheel = (e: WheelEvent) => {
-  if (isModalOpen.value) {
-    e.preventDefault()
-    handleZoom(e.deltaY > 0 ? -0.1 : 0.1)
-  }
-}
-
-onMounted(() => {
-  fetchModels()
-  loadHistory()
-  window.addEventListener('wheel', onWheel, { passive: false })
-})
-
-onUnmounted(() => {
-  window.removeEventListener('wheel', onWheel)
-})
-
+// ================= 逻辑函数 =================
 const fetchModels = async () => {
   try {
     const res = await axios.get('http://127.0.0.1:8000/models')
     availableModels.value = res.data
+    if (availableModels.value.length > 0) {
+      compareModelA.value = availableModels.value[0].name
+      compareModelB.value = availableModels.value.length > 1 ? availableModels.value[1].name : availableModels.value[0].name
+    }
   } catch (e) {
     console.error('获取模型列表失败', e)
   }
@@ -198,431 +81,441 @@ const handleModelChange = async () => {
 
 const onFileChange = (e: Event) => {
   const target = e.target as HTMLInputElement
-  const file = target.files?.[0]
-  if (file) {
-    selectedFile.value = file
+  if (target.files && target.files.length > 0) {
+    selectedFiles.value = target.files
+    isBatchMode.value = target.files.length > 1
+
+    const file = target.files[0]
     previewUrl.value = URL.createObjectURL(file)
     resultImage.value = null
     detections.value = []
-    stats.value = { time: 0, count: 0, model: '' }
+    batchResults.value = []
+    currentBatchIndex.value = 0
+
+    compareResultA.value = null
+    compareResultB.value = null
   }
 }
 
 const uploadAndDetect = async () => {
-  if (!selectedFile.value) return
+  if (!selectedFiles.value) return
   loading.value = true
+
   const formData = new FormData()
-  formData.append('file', selectedFile.value)
-  formData.append('conf', confFilter.value.toString())
+  if (isBatchMode.value) {
+    for (let i = 0; i < selectedFiles.value.length; i++) {
+      formData.append('files', selectedFiles.value[i])
+    }
+  } else {
+    formData.append('file', selectedFiles.value[0])
+  }
+
+  formData.append('conf', '0.25')
+  formData.append('iou', '0.45')
 
   try {
-    const originalBase64 = await fileToBase64(selectedFile.value)
-    const response = await axios.post('http://127.0.0.1:8000/detect', formData)
+    const endpoint = isBatchMode.value ? 'http://127.0.0.1:8000/detect/batch' : 'http://127.0.0.1:8000/detect'
+    const response = await axios.post(endpoint, formData)
     const data = response.data
+
     if (data.success) {
-      resultImage.value = data.image_base64
-      detections.value = data.detections
-      stats.value = {
-        time: data.inference_time_ms,
-        count: data.detections.length,
-        model: data.model_used
+      if (isBatchMode.value) {
+        batchResults.value = data.results
+        showBatchResult(0)
+        stats.value = {
+          time: data.total_inference_time_ms,
+          count: batchResults.value.reduce((acc, cur) => acc + cur.detections.length, 0),
+          model: data.model_used
+        }
+      } else {
+        resultImage.value = data.image_base64
+        detections.value = data.detections
+        stats.value = {
+          time: data.inference_time_ms,
+          count: data.detections.length,
+          model: data.model_used
+        }
       }
-      const compressedOriginal = await compressImage(originalBase64)
-      const compressedResult = await compressImage(data.image_base64)
-      addToHistory({
-        originalImage: compressedOriginal,
-        resultImage: compressedResult,
-        model: data.model_used,
-        count: data.detections.length,
-        time: data.inference_time_ms,
-        detections: data.detections
-      })
     }
-  } catch (error: any) {
-    console.error('Detection Error:', error)
+  } catch (error) {
     alert('检测失败，请检查后端服务')
   } finally {
     loading.value = false
   }
 }
 
-const resetDetect = () => {
-  selectedFile.value = null
-  previewUrl.value = null
-  resultImage.value = null
-  detections.value = []
-  stats.value = { time: 0, count: 0, model: '' }
+const showBatchResult = (index: number) => {
+  if (index >= 0 && index < batchResults.value.length) {
+    currentBatchIndex.value = index
+    const res = batchResults.value[index]
+    resultImage.value = res.image_base64
+    detections.value = res.detections
+  }
 }
+
+const runComparison = async () => {
+  if (!selectedFiles.value || selectedFiles.value.length === 0) return
+  compareLoading.value = true
+
+  const file = selectedFiles.value[0]
+
+  try {
+    const modelA = availableModels.value.find(m => m.name === compareModelA.value)
+    if (modelA) await axios.post('http://127.0.0.1:8000/set_model', modelA)
+
+    const formDataA = new FormData()
+    formDataA.append('file', file)
+    formDataA.append('conf', '0.25')
+    const resA = await axios.post('http://127.0.0.1:8000/detect', formDataA)
+
+    if (resA.data.success) {
+      compareResultA.value = resA.data.image_base64
+      compareStatsA.value = {
+        time: resA.data.inference_time_ms,
+        count: resA.data.detections.length
+      }
+    }
+
+    const modelB = availableModels.value.find(m => m.name === compareModelB.value)
+    if (modelB) await axios.post('http://127.0.0.1:8000/set_model', modelB)
+
+    const formDataB = new FormData()
+    formDataB.append('file', file)
+    formDataB.append('conf', '0.25')
+    const resB = await axios.post('http://127.0.0.1:8000/detect', formDataB)
+
+    if (resB.data.success) {
+      compareResultB.value = resB.data.image_base64
+      compareStatsB.value = {
+        time: resB.data.inference_time_ms,
+        count: resB.data.detections.length
+      }
+    }
+
+    const originalModel = availableModels.value.find(m => m.name === selectedModel.value)
+    if (originalModel) await axios.post('http://127.0.0.1:8000/set_model', originalModel)
+
+  } catch (e) {
+    alert('对比分析失败')
+  } finally {
+    compareLoading.value = false
+  }
+}
+
+// 反馈逻辑
+const submitFeedback = async (type: 'false_positive' | 'false_negative', details: string) => {
+  if (!selectedFiles.value) return
+  const filename = isBatchMode.value ? batchResults.value[currentBatchIndex.value].filename : selectedFiles.value[0].name
+
+  try {
+    await axios.post('http://127.0.0.1:8000/feedback', {
+      filename: filename,
+      model_name: stats.value.model,
+      feedback_type: type,
+      details: details
+    })
+    alert('感谢您的反馈！')
+  } catch (e) {
+    alert('反馈提交失败')
+  }
+}
+
+onMounted(fetchModels)
 </script>
 
 <template>
-  <div class="flex min-h-screen bg-[#F9FAFB] text-[#111827] font-sans">
-    <!-- Sidebar -->
-    <aside class="w-[260px] bg-[#1A1A1A] text-[#9CA3AF] flex flex-col fixed h-full z-50">
-      <div class="p-6 flex items-center gap-3 border-b border-gray-800">
-        <div class="w-8 h-8 bg-[#3B82F6] rounded-lg flex items-center justify-center shadow-lg shadow-blue-900/20">
-          <span class="text-white text-sm font-bold">AI</span>
-        </div>
-        <h1 class="text-white font-bold tracking-tight text-lg">PowerVision</h1>
-      </div>
-
-      <nav class="flex-1 p-4 space-y-1">
-        <div class="px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-gray-500 mb-2">Main Menu</div>
-        <button
-          @click="currentView = 'detect'"
-          :class="[currentView === 'detect' ? 'bg-gray-800 text-white' : 'hover:bg-gray-800 hover:text-white']"
-          class="w-full flex items-center gap-3 px-3 py-2.5 rounded-md transition-colors text-left"
-        >
-          <span class="text-lg">📊</span>
-          <span class="text-sm font-medium">智能检测</span>
-        </button>
-        <button
-          @click="currentView = 'history'"
-          :class="[currentView === 'history' ? 'bg-gray-800 text-white' : 'hover:bg-gray-800 hover:text-white']"
-          class="w-full flex items-center gap-3 px-3 py-2.5 rounded-md transition-colors text-left"
-        >
-          <span class="text-lg">📁</span>
-          <span class="text-sm font-medium">历史记录</span>
-        </button>
-      </nav>
-
-      <div class="p-4 border-t border-gray-800">
-        <div class="flex items-center gap-3 px-3 py-2">
-          <div class="w-8 h-8 bg-gray-700 rounded-full flex items-center justify-center text-xs text-white">JD</div>
-          <div class="flex-1 min-w-0">
-            <p class="text-xs font-bold text-white truncate">Admin User</p>
-            <p class="text-[10px] truncate">admin@power.ai</p>
+  <div class="min-h-screen bg-[#f8fafc] text-slate-900 font-sans selection:bg-blue-100">
+    <!-- Top Navigation -->
+    <nav class="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-slate-200 px-6 py-3">
+      <div class="max-w-7xl mx-auto flex justify-between items-center">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-200">
+            <span class="text-white text-xl font-bold">⚡</span>
+          </div>
+          <div>
+            <h1 class="text-lg font-bold tracking-tight">PowerAI <span class="text-blue-600">Inspection</span></h1>
+            <p class="text-[10px] text-slate-400 font-medium uppercase tracking-widest">Intelligent Detection System</p>
           </div>
         </div>
-      </div>
-    </aside>
 
-    <!-- Main Content -->
-    <main class="flex-1 ml-[260px]">
-      <!-- Header -->
-      <header class="h-16 bg-white border-b border-[#E5E7EB] flex items-center justify-between px-8 sticky top-0 z-40">
-        <div class="flex items-center gap-2 text-sm">
-          <span class="text-gray-400">项目</span>
-          <span class="text-gray-300">/</span>
-          <span class="font-medium">{{ currentView === 'detect' ? '智能检测' : '历史记录' }}</span>
+        <div class="flex bg-slate-100 p-1 rounded-lg">
+          <button
+            @click="currentTab = 'detect'"
+            :class="['px-4 py-1.5 text-xs font-bold rounded-md transition-all', currentTab === 'detect' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700']"
+          >
+            实时检测
+          </button>
+          <button
+            @click="currentTab = 'compare'"
+            :class="['px-4 py-1.5 text-xs font-bold rounded-md transition-all', currentTab === 'compare' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700']"
+          >
+            模型对比
+          </button>
         </div>
 
-        <div class="flex items-center gap-4">
-          <div class="flex items-center gap-2 px-3 py-1 bg-green-50 rounded-full border border-green-100">
-            <div class="w-1.5 h-1.5 bg-green-500 rounded-full"></div>
-            <span class="text-[10px] font-bold text-green-600 uppercase">Service Online</span>
+        <div class="flex items-center gap-4" v-if="currentTab === 'detect'">
+          <div class="hidden md:flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-full border border-slate-200">
+            <div class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+            <span class="text-xs font-bold text-slate-600">后端已连接</span>
           </div>
-          <button
-            v-if="currentView === 'detect' && resultImage"
-            @click="resetDetect"
-            class="text-xs font-bold text-gray-500 hover:text-blue-600 px-3 py-1.5 border border-gray-200 rounded-md hover:bg-gray-50 transition-colors"
+          <select
+            v-model="selectedModel"
+            @change="handleModelChange"
+            class="text-sm font-semibold bg-white border border-slate-200 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer shadow-sm"
           >
-            重新上传
-          </button>
-          <button
-            v-if="currentView === 'history'"
-            @click="clearHistory"
-            class="text-xs font-bold text-red-500 hover:text-red-600 px-3 py-1.5 border border-red-100 rounded-md hover:bg-red-50 transition-colors"
-          >
-            清空记录
-          </button>
+            <option v-for="m in availableModels" :key="m.name" :value="m.name">{{ m.name }}</option>
+          </select>
         </div>
-      </header>
+      </div>
+    </nav>
 
-      <!-- View: Detection -->
-      <div v-if="currentView === 'detect'" class="p-8 min-h-[calc(100vh-64px)] flex flex-col items-center">
-        <Transition name="fade-scale" mode="out-in">
-          <div v-if="!resultImage && !loading" class="w-full max-w-2xl mt-12">
-            <div class="bg-white rounded-xl border border-[#E5E7EB] shadow-sm p-8">
-              <div class="flex justify-between items-center mb-8">
+    <main class="max-w-7xl mx-auto p-6 lg:p-8">
+
+      <!-- ==================== 实时检测视图 ==================== -->
+      <div v-if="currentTab === 'detect'" class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+        <!-- Left Column: Controls & Stats -->
+        <div class="lg:col-span-4 space-y-6">
+          <div class="bg-white rounded-3xl p-8 shadow-sm border border-slate-200 transition-all hover:shadow-xl hover:shadow-slate-200/50">
+            <h3 class="text-sm font-bold text-slate-400 uppercase tracking-widest mb-6">数据输入</h3>
+            <div
+              class="relative group border-2 border-dashed border-slate-200 rounded-2xl p-8 transition-all hover:border-blue-400 hover:bg-blue-50/50 text-center cursor-pointer"
+              @click="$refs.fileInput.click()"
+            >
+              <input type="file" ref="fileInput" class="hidden" @change="onFileChange" multiple accept="image/*" />
+              <div class="flex flex-col items-center gap-3">
+                <div class="w-12 h-12 bg-slate-50 rounded-full flex items-center justify-center group-hover:scale-110 transition-transform">
+                  <span class="text-2xl">📸</span>
+                </div>
                 <div>
-                  <h2 class="text-xl font-bold text-gray-800">新建检测任务</h2>
-                  <p class="text-xs text-gray-400 mt-1">上传巡检图像并配置 AI 模型参数</p>
-                </div>
-                <select
-                  v-model="selectedModel"
-                  @change="handleModelChange"
-                  class="text-xs font-semibold bg-gray-50 border border-[#E5E7EB] rounded-md px-4 py-2 focus:ring-1 focus:ring-blue-500 outline-none cursor-pointer"
-                >
-                  <option v-for="m in availableModels" :key="m.name" :value="m.name">{{ m.name }}</option>
-                </select>
-              </div>
-
-              <div
-                class="relative aspect-video border-2 border-dashed border-[#E5E7EB] rounded-xl overflow-hidden group cursor-pointer hover:border-blue-400 hover:bg-blue-50/30 transition-all"
-                @click="$refs.fileInput.click()"
-              >
-                <input type="file" ref="fileInput" class="hidden" @change="onFileChange" />
-                <div v-if="previewUrl" class="w-full h-full relative">
-                  <img :src="previewUrl" class="w-full h-full object-contain" />
-                  <div class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-4">
-                    <button @click.stop="openModal(previewUrl!)" class="p-2 bg-white/20 hover:bg-white/40 rounded-full text-white backdrop-blur-md">🔍 预览</button>
-                    <button @click.stop="selectedFile = null; previewUrl = null" class="p-2 bg-white/20 hover:bg-red-500/40 rounded-full text-white backdrop-blur-md">✕ 移除</button>
-                  </div>
-                </div>
-                <div v-else class="w-full h-full flex flex-col items-center justify-center gap-4">
-                  <div class="w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center text-3xl group-hover:scale-110 transition-transform">📤</div>
-                  <div class="text-center">
-                    <p class="text-sm font-bold text-gray-600">点击或拖拽上传图像</p>
-                    <p class="text-[10px] text-gray-400 mt-1 uppercase tracking-widest">支持 JPG, PNG, BMP (Max 10MB)</p>
-                  </div>
+                  <p class="text-sm font-bold text-slate-700">点击上传巡检图</p>
+                  <p class="text-xs text-slate-400 mt-1">支持批量上传 (多选)</p>
                 </div>
               </div>
+            </div>
+            <div v-if="selectedFiles && selectedFiles.length > 0" class="mt-4 text-center">
+              <span class="text-xs font-bold bg-blue-100 text-blue-700 px-2 py-1 rounded-full">
+                已选择 {{ selectedFiles.length }} 张图片
+              </span>
+            </div>
+            <button
+              @click="uploadAndDetect"
+              :disabled="!selectedFiles || loading"
+              class="w-full mt-6 py-4 bg-slate-900 hover:bg-blue-600 disabled:bg-slate-200 text-white font-bold rounded-2xl shadow-lg shadow-slate-200 transition-all flex justify-center items-center gap-3 group"
+            >
+              <span v-if="loading" class="animate-spin text-xl">⏳</span>
+              <span v-else class="group-hover:translate-x-1 transition-transform">🚀</span>
+              {{ loading ? 'AI 分析中...' : '开始智能识别' }}
+            </button>
+          </div>
 
-              <div class="mt-8 p-6 bg-gray-50 rounded-xl">
-                <div class="flex justify-between items-center mb-4">
-                  <span class="text-xs font-bold text-gray-500 uppercase tracking-wider">置信度阈值 (Confidence)</span>
-                  <span class="text-sm font-mono font-bold text-blue-600 bg-white px-2 py-1 rounded border border-blue-100">{{ (confFilter * 100).toFixed(0) }}%</span>
+          <div v-if="isBatchMode && batchResults.length > 0" class="bg-white rounded-3xl p-6 shadow-sm border border-slate-200">
+            <h3 class="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">批量结果浏览</h3>
+            <div class="flex items-center justify-between gap-4">
+              <button @click="showBatchResult(currentBatchIndex - 1)" :disabled="currentBatchIndex === 0" class="p-2 rounded-full hover:bg-slate-100 disabled:opacity-30">⬅️</button>
+              <span class="text-sm font-bold text-slate-700">{{ currentBatchIndex + 1 }} / {{ batchResults.length }}</span>
+              <button @click="showBatchResult(currentBatchIndex + 1)" :disabled="currentBatchIndex === batchResults.length - 1" class="p-2 rounded-full hover:bg-slate-100 disabled:opacity-30">➡️</button>
+            </div>
+            <p class="text-center text-xs text-slate-400 mt-2 truncate">{{ batchResults[currentBatchIndex].filename }}</p>
+          </div>
+
+          <div v-if="stats.time > 0" class="bg-blue-600 rounded-3xl p-8 text-white shadow-lg shadow-blue-200 relative overflow-hidden">
+            <div class="relative z-10">
+              <h3 class="text-xs font-bold text-blue-200 uppercase tracking-widest mb-6">分析报告</h3>
+              <div class="grid grid-cols-2 gap-4">
+                <div class="bg-white/10 backdrop-blur-md rounded-2xl p-4">
+                  <p class="text-[10px] text-blue-100 uppercase font-bold">总耗时</p>
+                  <p class="text-2xl font-mono font-bold">{{ stats.time }}<span class="text-xs ml-1">ms</span></p>
                 </div>
-                <input type="range" v-model="confFilter" min="0" max="1" step="0.01" class="w-full accent-[#3B82F6]" />
+                <div class="bg-white/10 backdrop-blur-md rounded-2xl p-4">
+                  <p class="text-[10px] text-blue-100 uppercase font-bold">发现缺陷</p>
+                  <p class="text-2xl font-mono font-bold">{{ stats.count }}<span class="text-xs ml-1">处</span></p>
+                </div>
               </div>
+              <p class="mt-6 text-[10px] text-blue-200 italic">使用模型: {{ stats.model }}</p>
 
+              <!-- 漏检反馈按钮 -->
               <button
-                @click="uploadAndDetect"
-                :disabled="!selectedFile || loading"
-                class="w-full mt-8 py-4 bg-[#3B82F6] hover:bg-blue-700 disabled:bg-gray-200 text-white text-sm font-bold rounded-xl shadow-lg shadow-blue-200 transition-all flex justify-center items-center gap-3"
+                @click="submitFeedback('false_negative', '用户标记漏检')"
+                class="mt-4 w-full py-2 bg-white/20 hover:bg-white/30 text-xs font-bold rounded-lg transition-colors"
               >
-                🚀 开始智能识别
+                ⚠️ 标记为漏检 (False Negative)
               </button>
             </div>
+            <div class="absolute -right-4 -bottom-4 w-24 h-24 bg-white/10 rounded-full blur-2xl"></div>
           </div>
+        </div>
 
-          <div v-else-if="loading" class="w-full max-w-2xl mt-32 flex flex-col items-center gap-8">
-            <div class="relative">
-              <div class="w-24 h-24 border-4 border-blue-100 border-t-blue-500 rounded-full animate-spin"></div>
-              <div class="absolute inset-0 flex items-center justify-center text-2xl">🧠</div>
+        <!-- Right Column: Visualization -->
+        <div class="lg:col-span-8 space-y-6">
+          <div class="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden">
+            <div class="flex border-b border-slate-100">
+              <button class="px-6 py-4 text-sm font-bold border-b-2 border-blue-600 text-blue-600">视觉分析</button>
             </div>
-            <div class="text-center">
-              <h2 class="text-xl font-bold text-gray-800 animate-pulse">AI 正在深度分析中...</h2>
-              <p class="text-xs text-gray-400 mt-2 uppercase tracking-widest">正在识别电力设备缺陷并生成报告</p>
-            </div>
-          </div>
-
-          <div v-else-if="resultImage" class="w-full max-w-6xl">
-            <div class="grid grid-cols-12 gap-8">
-              <div class="col-span-4 space-y-6">
-                <div class="bg-white rounded-xl border border-[#E5E7EB] p-6">
-                  <h3 class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-4">当前配置</h3>
-                  <div class="space-y-3">
-                    <div class="flex justify-between text-xs">
-                      <span class="text-gray-500">模型</span>
-                      <span class="font-bold">{{ selectedModel }}</span>
-                    </div>
-                    <div class="flex justify-between text-xs">
-                      <span class="text-gray-500">阈值</span>
-                      <span class="font-bold text-blue-600">{{ (confFilter * 100).toFixed(0) }}%</span>
-                    </div>
+            <div class="p-6">
+              <div class="aspect-video bg-slate-900 rounded-2xl border border-slate-800 flex items-center justify-center overflow-hidden relative group">
+                <img v-if="resultImage" :src="resultImage" class="h-full object-contain" />
+                <div v-else class="text-slate-700 flex flex-col items-center gap-2">
+                  <span class="text-4xl opacity-20">🔍</span>
+                </div>
+                <div v-if="loading" class="absolute inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center">
+                  <div class="flex flex-col items-center gap-4">
+                    <div class="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+                    <p class="text-blue-400 font-mono text-xs tracking-widest animate-pulse">PROCESSING...</p>
                   </div>
                 </div>
-
-                <Transition name="slide-up" appear>
-                  <div class="bg-white rounded-xl border border-[#E5E7EB] p-6 shadow-sm">
-                    <h3 class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-6">推理统计报告</h3>
-                    <div class="space-y-6">
-                      <div class="flex justify-between items-end">
-                        <div>
-                          <p class="text-[10px] text-gray-400 uppercase font-bold">Inference Time</p>
-                          <p class="text-3xl font-mono font-bold text-[#111827]">{{ stats.time }}<span class="text-sm ml-1">ms</span></p>
-                        </div>
-                        <div class="w-24 h-1 bg-gray-100 rounded-full overflow-hidden mb-2">
-                          <div class="bg-blue-500 h-full" :style="{ width: Math.min(stats.time/10, 100) + '%' }"></div>
-                        </div>
-                      </div>
-                      <div class="pt-4 border-t border-gray-50">
-                        <p class="text-[10px] text-gray-400 uppercase font-bold mb-1">Detected Objects</p>
-                        <p class="text-3xl font-mono font-bold text-blue-600">{{ stats.count }}</p>
-                      </div>
-                    </div>
-                  </div>
-                </Transition>
-              </div>
-
-              <div class="col-span-8 space-y-6">
-                <Transition name="stagger" appear>
-                  <div class="bg-white rounded-xl border border-[#E5E7EB] overflow-hidden shadow-sm">
-                    <div class="px-6 py-4 border-b border-[#E5E7EB] flex justify-between items-center bg-gray-50/50">
-                      <h3 class="text-sm font-bold">视觉分析结果</h3>
-                    </div>
-                    <div class="p-6">
-                      <div class="grid grid-cols-2 gap-6">
-                        <div class="space-y-2">
-                          <p class="text-[10px] font-bold text-gray-400 uppercase">Original Source</p>
-                          <div class="aspect-square bg-gray-50 rounded-lg border border-[#E5E7EB] overflow-hidden cursor-zoom-in group relative" @click="openModal(previewUrl!)">
-                            <img :src="previewUrl!" class="w-full h-full object-contain transition-transform group-hover:scale-105" />
-                          </div>
-                        </div>
-                        <div class="space-y-2">
-                          <p class="text-[10px] font-bold text-blue-500 uppercase">AI Inference</p>
-                          <div class="aspect-square bg-[#1A1A1A] rounded-lg border border-gray-800 overflow-hidden cursor-zoom-in group relative" @click="openModal(resultImage!)">
-                            <img v-if="resultImage" :src="resultImage" class="w-full h-full object-contain transition-transform group-hover:scale-105" />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </Transition>
-
-                <Transition name="stagger" appear>
-                  <div class="bg-white rounded-xl border border-[#E5E7EB] overflow-hidden shadow-sm">
-                    <table class="w-full text-left border-collapse">
-                      <thead>
-                        <tr class="bg-gray-50 border-b border-[#E5E7EB]">
-                          <th class="px-6 py-3 text-[10px] font-bold text-gray-500 uppercase tracking-wider">缺陷类型</th>
-                          <th class="px-6 py-3 text-[10px] font-bold text-gray-500 uppercase tracking-wider">置信度</th>
-                          <th class="px-6 py-3 text-[10px] font-bold text-gray-500 uppercase tracking-wider">状态</th>
-                        </tr>
-                      </thead>
-                      <tbody class="divide-y divide-[#E5E7EB]">
-                        <tr v-for="(item, index) in filteredDetections" :key="index" class="hover:bg-gray-50 transition-colors">
-                          <td class="px-6 py-4 text-sm font-medium text-gray-700">{{ item.class_cn }}</td>
-                          <td class="px-6 py-4">
-                            <div class="flex items-center gap-3">
-                              <div class="flex-1 h-1.5 bg-gray-100 rounded-full max-w-[100px]">
-                                <div class="h-full bg-[#3B82F6] rounded-full" :style="{ width: (item.confidence * 100) + '%' }"></div>
-                              </div>
-                              <span class="text-xs font-mono text-gray-500">{{ (item.confidence * 100).toFixed(1) }}%</span>
-                            </div>
-                          </td>
-                          <td class="px-6 py-4">
-                            <span class="px-2 py-0.5 bg-blue-50 text-[#3B82F6] text-[10px] font-bold rounded border border-blue-100">已检出</span>
-                          </td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
-                </Transition>
               </div>
             </div>
           </div>
-        </Transition>
-      </div>
 
-      <!-- View: History -->
-      <div v-else class="p-8 max-w-6xl mx-auto">
-        <div class="bg-white rounded-xl border border-[#E5E7EB] overflow-hidden shadow-sm flex flex-col min-h-[600px]">
-          <div class="flex-1">
-            <table class="w-full text-left border-collapse">
-              <thead>
-                <tr class="bg-gray-50 border-b border-[#E5E7EB]">
-                  <th class="px-6 py-4 text-[10px] font-bold text-gray-500 uppercase tracking-wider">预览</th>
-                  <th class="px-6 py-4 text-[10px] font-bold text-gray-500 uppercase tracking-wider">检测时间</th>
-                  <th class="px-6 py-4 text-[10px] font-bold text-gray-500 uppercase tracking-wider">使用模型</th>
-                  <th class="px-6 py-4 text-[10px] font-bold text-gray-500 uppercase tracking-wider">结果统计</th>
-                  <th class="px-6 py-4 text-[10px] font-bold text-gray-500 uppercase tracking-wider">操作</th>
-                </tr>
-              </thead>
-              <tbody class="divide-y divide-[#E5E7EB]">
-                <tr v-for="item in paginatedHistory" :key="item.id" class="hover:bg-gray-50 transition-colors group">
-                  <td class="px-6 py-4">
-                    <div class="w-12 h-12 bg-gray-900 rounded border border-gray-800 overflow-hidden cursor-pointer" @click="openModal(item.resultImage)">
-                      <img :src="item.resultImage" class="w-full h-full object-cover" />
-                    </div>
-                  </td>
-                  <td class="px-6 py-4">
-                    <p class="text-sm font-medium text-gray-700">{{ item.timestamp }}</p>
-                  </td>
-                  <td class="px-6 py-4">
-                    <span class="px-2 py-1 bg-gray-100 text-gray-600 text-[10px] font-bold rounded">{{ item.model }}</span>
-                  </td>
-                  <td class="px-6 py-4">
-                    <div class="flex flex-col gap-1">
-                      <span class="text-xs text-gray-600 font-medium">检出: <span class="text-blue-600 font-bold">{{ item.count }}</span></span>
-                      <span class="text-[10px] text-gray-400 font-mono">耗时: {{ item.time }}ms</span>
-                    </div>
-                  </td>
-                  <td class="px-6 py-4">
-                    <button @click="viewHistoryItem(item)" class="text-xs font-bold text-[#3B82F6] hover:underline">查看详情</button>
-                  </td>
-                </tr>
-                <tr v-if="history.length === 0">
-                  <td colspan="5" class="px-6 py-24 text-center text-gray-400 text-xs font-bold uppercase tracking-widest">暂无历史记录</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          <!-- Pagination Controls -->
-          <div v-if="totalPages > 1" class="px-6 py-4 border-t border-[#E5E7EB] flex items-center justify-between bg-gray-50/30">
-            <div class="text-xs text-gray-500">
-              显示第 {{ (currentPage - 1) * itemsPerPage + 1 }} 到 {{ Math.min(currentPage * itemsPerPage, history.length) }} 条，共 {{ history.length }} 条
-            </div>
-            <div class="flex items-center gap-2">
-              <button
-                @click="currentPage--"
-                :disabled="currentPage === 1"
-                class="px-3 py-1.5 text-xs font-bold border border-[#E5E7EB] rounded-md bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                上一页
-              </button>
-              <div class="flex items-center gap-1">
-                <button
-                  v-for="p in totalPages" :key="p"
-                  @click="currentPage = p"
-                  :class="[currentPage === p ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-[#E5E7EB] hover:bg-gray-50']"
-                  class="w-8 h-8 text-xs font-bold border rounded-md transition-all"
-                >
-                  {{ p }}
-                </button>
+          <div class="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden">
+            <div class="px-8 py-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+              <div>
+                <h3 class="font-bold text-slate-800">缺陷识别清单</h3>
+                <p class="text-xs text-slate-400 mt-0.5">基于当前置信度阈值过滤</p>
               </div>
-              <button
-                @click="currentPage++"
-                :disabled="currentPage === totalPages"
-                class="px-3 py-1.5 text-xs font-bold border border-[#E5E7EB] rounded-md bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                下一页
-              </button>
+              <div class="flex items-center gap-4">
+                <span class="text-[10px] font-bold text-slate-400 uppercase">过滤阈值</span>
+                <input type="range" v-model="confFilter" min="0" max="1" step="0.01" class="w-24 accent-blue-600" />
+                <span class="text-xs font-mono font-bold text-blue-600 w-8">{{ (confFilter * 100).toFixed(0) }}%</span>
+              </div>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="w-full text-left border-collapse">
+                <thead>
+                  <tr>
+                    <th class="px-8 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">缺陷类型</th>
+                    <th class="px-8 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">可信度分数</th>
+                    <th class="px-8 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">目标尺寸 (WxH)</th>
+                    <th class="px-8 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">操作</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-50">
+                  <tr v-for="(item, index) in filteredDetections" :key="index" class="group hover:bg-blue-50/30 transition-colors">
+                    <td class="px-8 py-5">
+                      <div class="flex items-center gap-3">
+                        <div class="w-2 h-2 bg-blue-500 rounded-full shadow-[0_0_8px_rgba(59,130,246,0.5)]"></div>
+                        <span class="text-sm font-bold text-slate-700">{{ item.class_cn }}</span>
+                      </div>
+                    </td>
+                    <td class="px-8 py-5">
+                      <div class="flex items-center gap-3">
+                        <div class="flex-1 h-1 bg-slate-100 rounded-full max-w-[80px] overflow-hidden">
+                          <div class="h-full bg-blue-600 transition-all duration-1000" :style="{ width: (item.confidence * 100) + '%' }"></div>
+                        </div>
+                        <span class="text-xs font-mono font-bold text-slate-500">{{ (item.confidence * 100).toFixed(1) }}%</span>
+                      </div>
+                    </td>
+                    <td class="px-8 py-5">
+                      <span class="text-xs font-mono font-bold text-slate-600 bg-slate-100 px-2 py-1 rounded">{{ item.dimensions || '-' }}</span>
+                    </td>
+                    <td class="px-8 py-5">
+                      <button
+                        @click="submitFeedback('false_positive', `误检: ${item.class_cn}`)"
+                        class="text-[10px] font-bold text-red-500 hover:bg-red-50 px-2 py-1 rounded transition-colors"
+                      >
+                        ❌ 误检
+                      </button>
+                    </td>
+                  </tr>
+                  <tr v-if="filteredDetections.length === 0">
+                    <td colspan="4" class="px-8 py-20 text-center">
+                      <div class="flex flex-col items-center gap-3 opacity-20">
+                        <span class="text-5xl">📡</span>
+                        <p class="text-sm font-bold uppercase tracking-widest">No Anomalies Detected</p>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           </div>
         </div>
       </div>
+
+      <!-- ==================== 模型对比视图 ==================== -->
+      <div v-else class="space-y-8">
+        <div class="bg-white rounded-3xl p-8 shadow-sm border border-slate-200">
+          <div class="flex flex-col md:flex-row justify-between items-center gap-6">
+            <div class="flex-1 w-full">
+              <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">模型 A (基准)</label>
+              <select v-model="compareModelA" class="w-full text-sm font-semibold bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-blue-500 outline-none">
+                <option v-for="m in availableModels" :key="m.name" :value="m.name">{{ m.name }}</option>
+              </select>
+            </div>
+            <div class="text-2xl text-slate-300 font-black">VS</div>
+            <div class="flex-1 w-full">
+              <label class="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">模型 B (对照)</label>
+              <select v-model="compareModelB" class="w-full text-sm font-semibold bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-blue-500 outline-none">
+                <option v-for="m in availableModels" :key="m.name" :value="m.name">{{ m.name }}</option>
+              </select>
+            </div>
+            <button
+              @click="runComparison"
+              :disabled="!selectedFiles || compareLoading"
+              class="px-8 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 text-white font-bold rounded-xl shadow-lg shadow-blue-200 transition-all flex items-center gap-2"
+            >
+              <span v-if="compareLoading" class="animate-spin">⏳</span>
+              开始对比
+            </button>
+          </div>
+
+          <div v-if="!selectedFiles" class="mt-6 text-center p-8 border-2 border-dashed border-slate-200 rounded-2xl cursor-pointer hover:bg-slate-50" @click="$refs.fileInput.click()">
+            <p class="text-slate-400 font-bold">请先在“实时检测”页面上传一张图片</p>
+          </div>
+        </div>
+
+        <div v-if="compareResultA || compareResultB" class="grid grid-cols-1 md:grid-cols-2 gap-8">
+          <!-- Result A -->
+          <div class="space-y-4">
+            <div class="flex justify-between items-center px-2">
+              <span class="font-bold text-slate-700">模型 A 结果</span>
+              <span class="text-xs font-mono bg-blue-100 text-blue-700 px-2 py-1 rounded">{{ compareStatsA.time }}ms</span>
+            </div>
+            <div class="aspect-video bg-slate-900 rounded-2xl border border-slate-800 flex items-center justify-center overflow-hidden">
+              <img v-if="compareResultA" :src="compareResultA" class="h-full object-contain" />
+              <div v-else class="text-slate-600">Waiting...</div>
+            </div>
+          </div>
+
+          <!-- Result B -->
+          <div class="space-y-4">
+            <div class="flex justify-between items-center px-2">
+              <span class="font-bold text-slate-700">模型 B 结果</span>
+              <span class="text-xs font-mono bg-green-100 text-green-700 px-2 py-1 rounded">{{ compareStatsB.time }}ms</span>
+            </div>
+            <div class="aspect-video bg-slate-900 rounded-2xl border border-slate-800 flex items-center justify-center overflow-hidden">
+              <img v-if="compareResultB" :src="compareResultB" class="h-full object-contain" />
+              <div v-else class="text-slate-600">Waiting...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
     </main>
-
-    <!-- Image Modal -->
-    <Transition name="fade">
-      <div v-if="isModalOpen" class="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-sm" @click.self="closeModal">
-        <div class="absolute top-6 right-6 flex items-center gap-4 z-[110]">
-          <div class="flex items-center bg-white/10 rounded-full p-1 border border-white/20">
-            <button @click="handleZoom(-0.2)" class="w-8 h-8 flex items-center justify-center text-white hover:bg-white/20 rounded-full transition-colors">➖</button>
-            <span class="px-3 text-xs font-mono text-white min-w-[60px] text-center">{{ (zoomLevel * 100).toFixed(0) }}%</span>
-            <button @click="handleZoom(0.2)" class="w-8 h-8 flex items-center justify-center text-white hover:bg-white/20 rounded-full transition-colors">➕</button>
-          </div>
-          <button @click="closeModal" class="w-10 h-10 flex items-center justify-center bg-white/10 hover:bg-red-500 text-white rounded-full transition-all border border-white/20">✕</button>
-        </div>
-        <div class="w-full h-full flex items-center justify-center overflow-auto p-12" @click.self="closeModal">
-          <img :src="modalImageUrl" class="max-w-none transition-transform duration-200 ease-out shadow-2xl" :style="{ transform: `scale(${zoomLevel})` }" />
-        </div>
-      </div>
-    </Transition>
   </div>
 </template>
 
 <style scoped>
-/* 极简滚动条 */
-::-webkit-scrollbar { width: 4px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #E5E7EB; border-radius: 2px; }
-::-webkit-scrollbar-thumb:hover { background: #D1D5DB; }
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #e2e8f0;
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #cbd5e1;
+}
 
 select {
   appearance: none;
-  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239CA3AF' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
   background-repeat: no-repeat;
   background-position: right 0.75rem center;
-  background-size: 0.8em;
+  background-size: 1em;
   padding-right: 2.5rem;
 }
-
-/* Transitions */
-.fade-enter-active, .fade-leave-active { transition: opacity 0.3s ease; }
-.fade-enter-from, .fade-leave-to { opacity: 0; }
-
-.fade-scale-enter-active, .fade-scale-leave-active { transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1); }
-.fade-scale-enter-from { opacity: 0; transform: scale(0.95) translateY(10px); }
-.fade-scale-leave-to { opacity: 0; transform: scale(1.05) translateY(-10px); }
-
-.slide-up-enter-active { transition: all 0.5s ease-out; transition-delay: 0.2s; }
-.slide-up-enter-from { opacity: 0; transform: translateY(30px); }
-
-.stagger-enter-active { transition: all 0.6s ease-out; transition-delay: 0.4s; }
-.stagger-enter-from { opacity: 0; transform: translateX(40px); }
 </style>

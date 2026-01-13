@@ -15,138 +15,63 @@
 *   **后处理算子CUDA融合**：编写了自定义 CUDA Kernel (`decode_yolo_kernel`)，将复杂的边界框解码和置信度过滤操作融合为单一CUDA内核，大幅减少 Device-to-Host 内存传输开销 (减少约 90%)。
 *   **多批次并行推理**：支持动态 Batch Size (1-16)，利用 `Optimization Profile` 实现批量图片同时推理，显著提升GPU利用率。
 
-## 环境配置 (Linux / Fedora)
+## 🚀 快速运行指南 (Docker 一体化方案)
 
-由于您的宿主机 (Fedora 43) 的 GCC 版本 (15) 过新，与 CUDA 12.6 不兼容，且无法轻松安装旧版 GCC，**强烈建议使用 Docker 进行开发和构建**。
+由于 C++ 编译产物 (`.so`) 对系统环境（OpenCV/CUDA 版本）依赖极强，**强烈建议直接在 Docker 容器中运行 Python API 服务**。这样可以确保 C++ 模块能被正确加载。
 
-### 1. 安装与配置 Docker (已完成)
-
-### 2. 使用提供的 Dockerfile (已构建)
-
-镜像名称: `image-detection-backend`
-
-**运行容器：**
-
-**关键更新：**
-1.  对于 Fedora 用户，挂载卷时必须添加 `:z` 选项 (SELinux)。
-2.  使用 CDI 语法 `--device=nvidia.com/gpu=all` 启用 GPU。
-3.  如果遇到权限错误，请使用 `sudo` 或确保用户组权限已生效。
+### 1. 启动容器
+在 Windows PowerShell 或 Linux 终端中执行：
 
 ```bash
-# 在 backend/cpp 目录下运行
-sudo docker run --device=nvidia.com/gpu=all -it --rm -v $(pwd):/workspace/project:z image-detection-backend
+# 请将 D:\Github\image_detection 替换为你的实际项目根路径
+docker run --gpus all -it --rm -p 8000:8000 -v D:\Github\image_detection:/workspace/project image-detection-backend
 ```
 
-### 3. 在容器内构建
-
-进入容器后，执行以下命令：
+### 2. 配置环境 (容器内)
+进入容器后，推荐使用 `uv` 来快速配置 Python 环境：
 
 ```bash
-# 1. 清理旧的构建目录 (如果存在)
-rm -rf build
+# 1. 更新系统源并安装基础库 (OpenCV 需要 libgl1)
+apt update && apt install -y libgl1 curl
 
-# 2. 创建并进入构建目录
-mkdir -p build && cd build
+# 2. 安装 uv (使用官方脚本)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# 关键修正：uv 默认安装在 .local/bin
+source $HOME/.local/bin/env
 
-# 3. 运行 CMake
-cmake ..
+# 3. 配置国内镜像源 (可选，加速下载)
+export UV_PYPI_MIRROR=https://pypi.tuna.tsinghua.edu.cn/simple
 
-# 4. 编译
-make
+# 4. 同步项目环境
+cd /workspace/project/backend/python
+uv sync
 ```
 
-### 4. 运行测试
-
-程序支持通过命令行参数选择不同的模型。
-
-**模型目录结构：**
-```
-src/data/models/
-├── model/   (对应 index 1)
-├── model2/  (对应 index 2)
-├── model4/  (对应 index 4)
-├── model6/  (对应 index 6)
-└── model8/  (对应 index 8)
-```
-*生成的 Engine 文件 (`.engine`) 和校准缓存 (`.calib`) 将保存在各自的模型目录下。*
-
-**运行命令：**
-
+### 3. 编译 C++ 模块 (如果尚未编译)
 ```bash
-# 使用默认模型 (index=1, 即 src/data/models/model/best.onnx)
-./ImageDetection
-
-# 使用模型 2 (src/data/models/model2/best.onnx)
-./ImageDetection 2
-
-# 使用模型 8 (src/data/models/model8/best.onnx)
-./ImageDetection 8
-```
-
-程序流程：
-1.  检查对应目录下的 `best_int8_batch.engine` 是否存在。
-2.  如果不存在，加载 `src/data/calib` 下的图片进行 INT8 校准。
-3.  构建支持多 Batch 的 TensorRT Engine 并保存到同级目录。
-4.  执行 Batch=4 的推理测试，并输出检测结果。
-
-## Windows 11 快速部署指南
-
-如果您希望在 Windows 11 上运行此项目，最简单的方法是使用 **WSL2 (Windows Subsystem for Linux)** 配合 **Docker Desktop**。
-
-### 1. 准备工作
-
-1.  **安装 WSL2**：
-    *   打开 PowerShell (管理员)，运行：`wsl --install`。
-    *   重启电脑。
-2.  **安装 Docker Desktop**：
-    *   下载并安装 [Docker Desktop for Windows](https://www.docker.com/products/docker-desktop/)。
-    *   在设置中，确保勾选 "Use the WSL 2 based engine"。
-3.  **安装 NVIDIA 驱动**：
-    *   在 Windows 上安装最新的 NVIDIA Game Ready 或 Studio 驱动。
-    *   **不需要**在 WSL2 内部安装驱动，WSL2 会直接透传 Windows 的驱动。
-
-### 2. 获取代码
-
-打开 WSL 终端 (Ubuntu)，克隆代码：
-```bash
-git clone <your-repo-url>
-cd image_detection/backend/cpp
-```
-
-### 3. 导出与导入 Docker 镜像 (可选)
-
-如果您想直接使用在 Linux 上配置好的镜像，可以将其导出：
-
-**在 Linux (Fedora) 上导出：**
-```bash
-docker save -o image-detection-backend.tar image-detection-backend
-# 然后将 .tar 文件复制到 Windows 机器
-```
-
-**在 Windows (WSL2) 上导入：**
-```bash
-docker load -i image-detection-backend.tar
-```
-
-### 4. 构建与运行
-
-在 WSL 终端中执行：
-
-```bash
-# 1. 构建镜像 (如果未导入)
-docker build -t image-detection-backend .
-
-# 2. 运行容器 (Windows 下通常不需要 --device 语法，直接 --gpus all)
-docker run --gpus all -it --rm -v $(pwd):/workspace/project image-detection-backend
-
-# 3. 在容器内编译 (同 Linux)
+cd /workspace/project/backend/cpp
 mkdir -p build && cd build
 cmake ..
-make
-./ImageDetection
+make image_detection_cpp
+
+# 将生成的 .so 复制到 Python 目录
+cp image_detection_cpp*.so /workspace/project/backend/python/src/image_detection/core/image_detection_cpp.so
 ```
 
-*注意：Windows 下不需要 `:z` 选项，因为没有 SELinux。*
+### 4. 启动 API 服务
+```bash
+cd /workspace/project/backend/python
+
+# 设置 PYTHONPATH 以便 Python 能找到 image_detection 包
+export PYTHONPATH=$PYTHONPATH:$(pwd)/src
+
+# 使用 uv 启动服务
+uv run python src/image_detection/web/api.py
+```
+
+服务启动后，即可在宿主机通过 `http://localhost:8000` 访问 API，前端项目也能正常连接。
+
+---
 
 ## 目录结构
 
