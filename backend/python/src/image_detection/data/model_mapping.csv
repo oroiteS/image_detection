@@ -1,5 +1,6 @@
 folder_name,display_name
 train,yolo_v11_large_300epochs
+train,yolo_v11_large_500epochs
 train4,yolo_v11_medium_50epochs
 train6,yolo_v11_medium_200epochs
 train8,yolo_v11_medium_300epochs
