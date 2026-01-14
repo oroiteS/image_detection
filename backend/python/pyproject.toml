@@ -1,7 +1,7 @@
 [project]
 name = "image-detection"
 version = "0.1.0"
-description = "电力巡检图像智能检测系统 - Python后端"
+description = "电力巡检图像智能检测系统"
 readme = "README.md"
 requires-python = ">=3.10, <3.11"
 

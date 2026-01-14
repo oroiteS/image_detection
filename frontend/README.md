@@ -1,54 +1,39 @@
-# frontend
+# 电力巡检系统 - 前端界面 (Modern UI)
 
-This template should help get you started developing with Vue 3 in Vite.
+基于 Vue 3 (TS) + Vite + Tailwind CSS 4.0 构建的现代化电力巡检智能检测工作站。
 
-## Recommended IDE Setup
+## ✨ 核心特性
 
-[VS Code](https://code.visualstudio.com/) + [Vue (Official)](https://marketplace.visualstudio.com/items?itemName=Vue.volar) (and disable Vetur).
+- **现代化极简 UI**：采用深色侧边栏 + 纯净内容区的双栏布局，适配现代工业审美。
+- **智能检测工作流**：
+  - **任务配置**：居中式任务卡片，支持模型选择、图片上传及阈值预设。
+  - **交互动效**：检测完成后，结果卡片通过平滑的位移与淡入动画呈现。
+- **高级图像查看器**：
+  - 支持点击放大至全屏。
+  - 支持 **鼠标滚轮缩放** 及 按钮缩放，方便查看电力设备微小缺陷。
+- **历史记录管理**：
+  - **持久化存储**：自动保存检测记录至浏览器 `localStorage`。
+  - **图片压缩**：存入记录前自动进行缩略图压缩，节省存储空间。
+  - **分页浏览**：支持翻页查看（每页 7 条），支持一键清空。
+  - **详情回溯**：点击“查看详情”可完整还原历史检测的所有状态（对比图、统计数据、缺陷列表）。
 
-## Recommended Browser Setup
+## 🛠️ 快速启动
 
-- Chromium-based browsers (Chrome, Edge, Brave, etc.):
-  - [Vue.js devtools](https://chromewebstore.google.com/detail/vuejs-devtools/nhdogjmejiglipccpnnnanhbledajbpd)
-  - [Turn on Custom Object Formatter in Chrome DevTools](http://bit.ly/object-formatters)
-- Firefox:
-  - [Vue.js devtools](https://addons.mozilla.org/en-US/firefox/addon/vue-js-devtools/)
-  - [Turn on Custom Object Formatter in Firefox DevTools](https://fxdx.dev/firefox-devtools-custom-object-formatters/)
-
-## Type Support for `.vue` Imports in TS
-
-TypeScript cannot handle type information for `.vue` imports by default, so we replace the `tsc` CLI with `vue-tsc` for type checking. In editors, we need [Volar](https://marketplace.visualstudio.com/items?itemName=Vue.volar) to make the TypeScript language service aware of `.vue` types.
-
-## Customize configuration
-
-See [Vite Configuration Reference](https://vite.dev/config/).
-
-## Project Setup
-
-```sh
+### 1. 安装依赖
+```bash
+cd frontend
 pnpm install
 ```
 
-### Compile and Hot-Reload for Development
-
-```sh
+### 2. 启动开发服务器
+```bash
 pnpm dev
 ```
+访问 `http://localhost:5173`。
 
-### Type-Check, Compile and Minify for Production
-
-```sh
-pnpm build
-```
-
-### Run Unit Tests with [Vitest](https://vitest.dev/)
-
-```sh
-pnpm test:unit
-```
-
-### Lint with [ESLint](https://eslint.org/)
-
-```sh
-pnpm lint
-```
+## 📦 技术栈
+- **框架**: Vue 3.5 (Composition API)
+- **构建**: Vite 7.0 + @tailwindcss/vite
+- **样式**: Tailwind CSS 4.0
+- **通信**: Axios
+- **状态管理**: 原生 Vue Ref + LocalStorage
