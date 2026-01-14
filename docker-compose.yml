@@ -1,0 +1,52 @@
+services:
+  # Python Backend Service
+  # 包含 YOLO 推理和 API 服务
+  backend-python:
+    build:
+      context: ./backend/python
+      dockerfile: Dockerfile
+    container_name: image-detection-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      # 挂载源代码，方便开发调试
+      - ./backend/python/src:/app/src
+      # 挂载运行结果目录
+      - ./backend/python/runs:/app/runs
+      # 挂载数据库文件，实现持久化
+      - ./backend/python/app.db:/app/app.db
+      # 挂载 C++ 模型目录 (映射到容器根目录下的 /cpp)
+      # Python 代码中通过 ../cpp 访问，即 /app/../cpp -> /cpp
+      - ./backend/cpp/src/data/models:/cpp/src/data/models
+    environment:
+      - PYTHONUNBUFFERED=1
+    # 启用 GPU 支持 (需要安装 NVIDIA Container Toolkit)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - image-detection-net
+    restart: unless-stopped
+
+  # Frontend Service
+  # Vue 3 + Vite + Nginx
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: image-detection-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend-python
+    networks:
+      - image-detection-net
+    restart: unless-stopped
+
+networks:
+  image-detection-net:
+    driver: bridge

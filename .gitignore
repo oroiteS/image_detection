@@ -57,7 +57,7 @@ dist/
 dist-ssr/
 *.local
 .npm/
-.pdm-debug.log*
+.pnpm-debug.log*
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -92,21 +92,13 @@ bin/
 # ==========================
 # Deep Learning Models & Checkpoints
 # ==========================
-# General rule: ignore large model files
 *.pt
 *.pth
 *.ckpt
 *.onnx
-*.engine
 *.trt
 *.plan
 *.cache
-
-# Exception: DO NOT ignore files under the 'models' directory
-!backend/cpp/src/data/models/**
-
-# But ignore ONNX files inside models directory (as requested)
-backend/cpp/src/data/models/**/*.onnx
 
 # ==========================
 # Project Specific & Data
@@ -114,9 +106,11 @@ backend/cpp/src/data/models/**/*.onnx
 runs/
 wandb/
 datasets/
-temp/
 # Exception: keep a small 'samples' folder if needed
 !**/datasets/samples/
+
+# Calibration Data (Large files)
+backend/cpp/src/data/calib/
 
 # ==========================
 # OS Generated Files

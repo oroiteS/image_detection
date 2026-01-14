@@ -24,7 +24,11 @@
 
 ```bash
 # 请将 D:\Github\image_detection 替换为你的实际项目根路径
-docker run --gpus all -it --rm -p 8000:8000 -v D:\Github\image_detection:/workspace/project image-detection-backend
+    docker run --gpus all -it --rm -p 8000:8000 `
+      -v D:\Github\image_detection:/workspace/project `
+      -v D:\Github\image_detection\.uv_cache\bin:/root/.local/bin `
+      -v D:\Github\image_detection\.uv_cache\cache:/root/.cache/uv `
+      image-detection-backend
 ```
 
 ### 2. 配置环境 (容器内)

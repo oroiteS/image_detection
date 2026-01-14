@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import axios from 'axios'
+import Lightbox from './components/Lightbox.vue'
+import LandingPage from './components/LandingPage.vue'
+import Login from './components/Login.vue'
+import History from './components/History.vue'
+import Toast from './components/Toast.vue'
 
 // ================= 类型定义 =================
 interface Detection {
@@ -22,8 +27,19 @@ interface BatchResult {
 }
 
 // ================= 状态管理 =================
-const currentTab = ref<'detect' | 'compare'>('detect')
+const showLanding = ref(true)
+const showLogin = ref(false)
+const currentUser = ref<string | null>(localStorage.getItem('username'))
+const currentTab = ref<'detect' | 'compare' | 'history'>('detect')
+const toastRef = ref<InstanceType<typeof Toast> | null>(null)
 
+// Lightbox 状态
+const lightboxImage = ref<string | null>(null)
+const openLightbox = (src: string | null) => {
+  if (src) lightboxImage.value = src
+}
+
+// 实时检测状态
 const selectedFiles = ref<FileList | null>(null)
 const previewUrl = ref<string | null>(null)
 const resultImage = ref<string | null>(null)
@@ -35,18 +51,23 @@ const stats = ref({ time: 0, count: 0, model: '' })
 const isBatchMode = ref(false)
 const batchResults = ref<BatchResult[]>([])
 const currentBatchIndex = ref(0)
+const MAX_BATCH_SIZE = 16
 
 // 模型列表
 const availableModels = ref<Model[]>([])
 const selectedModel = ref<string>('yolo11n (Official)')
 
 // 对比模式状态
+const compareFile = ref<File | null>(null)
+const comparePreviewUrl = ref<string | null>(null)
 const compareModelA = ref<string>('')
 const compareModelB = ref<string>('')
 const compareResultA = ref<string | null>(null)
 const compareResultB = ref<string | null>(null)
 const compareStatsA = ref({ time: 0, count: 0 })
 const compareStatsB = ref({ time: 0, count: 0 })
+const compareDetectionsA = ref<Detection[]>([])
+const compareDetectionsB = ref<Detection[]>([])
 const compareLoading = ref(false)
 
 const confFilter = ref(0.25)
@@ -55,6 +76,36 @@ const filteredDetections = computed(() => {
 })
 
 // ================= 逻辑函数 =================
+const showToast = (msg: string, type: 'success' | 'error' | 'info' = 'success') => {
+  toastRef.value?.showToast(msg, type)
+}
+
+const handleTabChange = (tab: 'detect' | 'compare' | 'history') => {
+  if (tab === 'history' && !currentUser.value) {
+    showLogin.value = true
+    showToast('请先登录以查看历史记录', 'info')
+    return
+  }
+  currentTab.value = tab
+}
+
+const handleLoginSuccess = (username: string) => {
+  currentUser.value = username
+  showLogin.value = false
+  currentTab.value = 'history'
+  showToast(`欢迎回来，${username}！`, 'success')
+}
+
+const logout = () => {
+  localStorage.removeItem('username')
+  localStorage.removeItem('token')
+  currentUser.value = null
+  if (currentTab.value === 'history') {
+    currentTab.value = 'detect'
+  }
+  showToast('已安全退出登录', 'info')
+}
+
 const fetchModels = async () => {
   try {
     const res = await axios.get('http://127.0.0.1:8000/models')
@@ -65,6 +116,7 @@ const fetchModels = async () => {
     }
   } catch (e) {
     console.error('获取模型列表失败', e)
+    showToast('无法连接到后端服务', 'error')
   }
 }
 
@@ -73,8 +125,9 @@ const handleModelChange = async () => {
   if (model) {
     try {
       await axios.post('http://127.0.0.1:8000/set_model', model)
+      showToast(`已切换至模型: ${model.name}`, 'success')
     } catch (e) {
-      alert('模型切换失败')
+      showToast('模型切换失败', 'error')
     }
   }
 }
@@ -82,18 +135,37 @@ const handleModelChange = async () => {
 const onFileChange = (e: Event) => {
   const target = e.target as HTMLInputElement
   if (target.files && target.files.length > 0) {
-    selectedFiles.value = target.files
-    isBatchMode.value = target.files.length > 1
+    if (target.files.length > MAX_BATCH_SIZE) {
+      showToast(`一次最多只能上传 ${MAX_BATCH_SIZE} 张图片，已自动截取`, 'info')
+      const dt = new DataTransfer()
+      for (let i = 0; i < MAX_BATCH_SIZE; i++) {
+        dt.items.add(target.files[i])
+      }
+      selectedFiles.value = dt.files
+    } else {
+      selectedFiles.value = target.files
+    }
 
-    const file = target.files[0]
+    isBatchMode.value = selectedFiles.value!.length > 1
+
+    const file = selectedFiles.value![0]
     previewUrl.value = URL.createObjectURL(file)
     resultImage.value = null
     detections.value = []
     batchResults.value = []
     currentBatchIndex.value = 0
+  }
+}
 
+const onCompareFileChange = (e: Event) => {
+  const target = e.target as HTMLInputElement
+  if (target.files && target.files.length > 0) {
+    compareFile.value = target.files[0]
+    comparePreviewUrl.value = URL.createObjectURL(compareFile.value)
     compareResultA.value = null
     compareResultB.value = null
+    compareDetectionsA.value = []
+    compareDetectionsB.value = []
   }
 }
 
@@ -112,6 +184,7 @@ const uploadAndDetect = async () => {
 
   formData.append('conf', '0.25')
   formData.append('iou', '0.45')
+  if (currentUser.value) formData.append('username', currentUser.value)
 
   try {
     const endpoint = isBatchMode.value ? 'http://127.0.0.1:8000/detect/batch' : 'http://127.0.0.1:8000/detect'
@@ -127,6 +200,7 @@ const uploadAndDetect = async () => {
           count: batchResults.value.reduce((acc, cur) => acc + cur.detections.length, 0),
           model: data.model_used
         }
+        showToast(`批量检测完成，共 ${selectedFiles.value.length} 张`, 'success')
       } else {
         resultImage.value = data.image_base64
         detections.value = data.detections
@@ -135,10 +209,11 @@ const uploadAndDetect = async () => {
           count: data.detections.length,
           model: data.model_used
         }
+        showToast(`检测完成，发现 ${data.detections.length} 处缺陷`, 'success')
       }
     }
   } catch (error) {
-    alert('检测失败，请检查后端服务')
+    showToast('检测失败，请检查后端服务', 'error')
   } finally {
     loading.value = false
   }
@@ -154,38 +229,40 @@ const showBatchResult = (index: number) => {
 }
 
 const runComparison = async () => {
-  if (!selectedFiles.value || selectedFiles.value.length === 0) return
+  if (!compareFile.value) return
   compareLoading.value = true
 
-  const file = selectedFiles.value[0]
-
   try {
+    // 1. 跑模型 A
     const modelA = availableModels.value.find(m => m.name === compareModelA.value)
     if (modelA) await axios.post('http://127.0.0.1:8000/set_model', modelA)
 
     const formDataA = new FormData()
-    formDataA.append('file', file)
+    formDataA.append('file', compareFile.value)
     formDataA.append('conf', '0.25')
     const resA = await axios.post('http://127.0.0.1:8000/detect', formDataA)
 
     if (resA.data.success) {
       compareResultA.value = resA.data.image_base64
+      compareDetectionsA.value = resA.data.detections
       compareStatsA.value = {
         time: resA.data.inference_time_ms,
         count: resA.data.detections.length
       }
     }
 
+    // 2. 跑模型 B
     const modelB = availableModels.value.find(m => m.name === compareModelB.value)
     if (modelB) await axios.post('http://127.0.0.1:8000/set_model', modelB)
 
     const formDataB = new FormData()
-    formDataB.append('file', file)
+    formDataB.append('file', compareFile.value)
     formDataB.append('conf', '0.25')
     const resB = await axios.post('http://127.0.0.1:8000/detect', formDataB)
 
     if (resB.data.success) {
       compareResultB.value = resB.data.image_base64
+      compareDetectionsB.value = resB.data.detections
       compareStatsB.value = {
         time: resB.data.inference_time_ms,
         count: resB.data.detections.length
@@ -195,14 +272,15 @@ const runComparison = async () => {
     const originalModel = availableModels.value.find(m => m.name === selectedModel.value)
     if (originalModel) await axios.post('http://127.0.0.1:8000/set_model', originalModel)
 
+    showToast('对比分析完成', 'success')
+
   } catch (e) {
-    alert('对比分析失败')
+    showToast('对比分析失败', 'error')
   } finally {
     compareLoading.value = false
   }
 }
 
-// 反馈逻辑
 const submitFeedback = async (type: 'false_positive' | 'false_negative', details: string) => {
   if (!selectedFiles.value) return
   const filename = isBatchMode.value ? batchResults.value[currentBatchIndex.value].filename : selectedFiles.value[0].name
@@ -214,9 +292,9 @@ const submitFeedback = async (type: 'false_positive' | 'false_negative', details
       feedback_type: type,
       details: details
     })
-    alert('感谢您的反馈！')
+    showToast('感谢您的反馈！', 'success')
   } catch (e) {
-    alert('反馈提交失败')
+    showToast('反馈提交失败', 'error')
   }
 }
 
@@ -224,11 +302,25 @@ onMounted(fetchModels)
 </script>
 
 <template>
+  <!-- 全局 Toast -->
+  <Toast ref="toastRef" />
+
+  <!-- Landing Page -->
+  <Transition name="slide-up">
+    <LandingPage v-if="showLanding" @start="showLanding = false" />
+  </Transition>
+
+  <!-- Login Modal -->
+  <Login v-if="showLogin" @login-success="handleLoginSuccess" @close="showLogin = false" />
+
   <div class="min-h-screen bg-[#f8fafc] text-slate-900 font-sans selection:bg-blue-100">
+    <!-- 全局 Lightbox 组件 -->
+    <Lightbox :src="lightboxImage" @close="lightboxImage = null" />
+
     <!-- Top Navigation -->
     <nav class="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-slate-200 px-6 py-3">
       <div class="max-w-7xl mx-auto flex justify-between items-center">
-        <div class="flex items-center gap-3">
+        <div class="flex items-center gap-3 cursor-pointer" @click="showLanding = true">
           <div class="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-200">
             <span class="text-white text-xl font-bold">⚡</span>
           </div>
@@ -240,31 +332,34 @@ onMounted(fetchModels)
 
         <div class="flex bg-slate-100 p-1 rounded-lg">
           <button
-            @click="currentTab = 'detect'"
+            @click="handleTabChange('detect')"
             :class="['px-4 py-1.5 text-xs font-bold rounded-md transition-all', currentTab === 'detect' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700']"
           >
             实时检测
           </button>
           <button
-            @click="currentTab = 'compare'"
+            @click="handleTabChange('compare')"
             :class="['px-4 py-1.5 text-xs font-bold rounded-md transition-all', currentTab === 'compare' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700']"
           >
             模型对比
           </button>
+          <button
+            @click="handleTabChange('history')"
+            :class="['px-4 py-1.5 text-xs font-bold rounded-md transition-all', currentTab === 'history' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700']"
+          >
+            历史记录
+          </button>
         </div>
 
-        <div class="flex items-center gap-4" v-if="currentTab === 'detect'">
-          <div class="hidden md:flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-full border border-slate-200">
-            <div class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-            <span class="text-xs font-bold text-slate-600">后端已连接</span>
+        <div class="flex items-center gap-4">
+          <!-- 用户信息 -->
+          <div v-if="currentUser" class="flex items-center gap-2 pl-4 border-l border-slate-200">
+            <span class="text-sm font-bold text-slate-700">{{ currentUser }}</span>
+            <button @click="logout" class="text-xs text-red-500 hover:underline">退出</button>
           </div>
-          <select
-            v-model="selectedModel"
-            @change="handleModelChange"
-            class="text-sm font-semibold bg-white border border-slate-200 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none cursor-pointer shadow-sm"
-          >
-            <option v-for="m in availableModels" :key="m.name" :value="m.name">{{ m.name }}</option>
-          </select>
+          <div v-else class="flex items-center gap-2 pl-4 border-l border-slate-200">
+            <button @click="showLogin = true" class="text-sm font-bold text-blue-600 hover:underline">登录</button>
+          </div>
         </div>
       </div>
     </nav>
@@ -276,6 +371,15 @@ onMounted(fetchModels)
         <!-- Left Column: Controls & Stats -->
         <div class="lg:col-span-4 space-y-6">
           <div class="bg-white rounded-3xl p-8 shadow-sm border border-slate-200 transition-all hover:shadow-xl hover:shadow-slate-200/50">
+            <h3 class="text-sm font-bold text-slate-400 uppercase tracking-widest mb-4">模型选择</h3>
+            <select
+              v-model="selectedModel"
+              @change="handleModelChange"
+              class="w-full text-sm font-semibold bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-blue-500 outline-none mb-6"
+            >
+              <option v-for="m in availableModels" :key="m.name" :value="m.name">{{ m.name }}</option>
+            </select>
+
             <h3 class="text-sm font-bold text-slate-400 uppercase tracking-widest mb-6">数据输入</h3>
             <div
               class="relative group border-2 border-dashed border-slate-200 rounded-2xl p-8 transition-all hover:border-blue-400 hover:bg-blue-50/50 text-center cursor-pointer"
@@ -288,7 +392,7 @@ onMounted(fetchModels)
                 </div>
                 <div>
                   <p class="text-sm font-bold text-slate-700">点击上传巡检图</p>
-                  <p class="text-xs text-slate-400 mt-1">支持批量上传 (多选)</p>
+                  <p class="text-xs text-slate-400 mt-1">支持批量上传 (多选, Max 16)</p>
                 </div>
               </div>
             </div>
@@ -333,7 +437,6 @@ onMounted(fetchModels)
               </div>
               <p class="mt-6 text-[10px] text-blue-200 italic">使用模型: {{ stats.model }}</p>
 
-              <!-- 漏检反馈按钮 -->
               <button
                 @click="submitFeedback('false_negative', '用户标记漏检')"
                 class="mt-4 w-full py-2 bg-white/20 hover:bg-white/30 text-xs font-bold rounded-lg transition-colors"
@@ -352,12 +455,16 @@ onMounted(fetchModels)
               <button class="px-6 py-4 text-sm font-bold border-b-2 border-blue-600 text-blue-600">视觉分析</button>
             </div>
             <div class="p-6">
-              <div class="aspect-video bg-slate-900 rounded-2xl border border-slate-800 flex items-center justify-center overflow-hidden relative group">
+              <!-- 使用自定义 Lightbox -->
+              <div
+                class="aspect-video bg-slate-900 rounded-2xl border border-slate-800 flex items-center justify-center overflow-hidden relative group cursor-zoom-in"
+                @click="openLightbox(resultImage)"
+              >
                 <img v-if="resultImage" :src="resultImage" class="h-full object-contain" />
                 <div v-else class="text-slate-700 flex flex-col items-center gap-2">
                   <span class="text-4xl opacity-20">🔍</span>
                 </div>
-                <div v-if="loading" class="absolute inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center">
+                <div v-if="loading" class="absolute inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center pointer-events-none">
                   <div class="flex flex-col items-center gap-4">
                     <div class="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
                     <p class="text-blue-400 font-mono text-xs tracking-widest animate-pulse">PROCESSING...</p>
@@ -433,7 +540,7 @@ onMounted(fetchModels)
       </div>
 
       <!-- ==================== 模型对比视图 ==================== -->
-      <div v-else class="space-y-8">
+      <div v-else-if="currentTab === 'compare'" class="space-y-8">
         <div class="bg-white rounded-3xl p-8 shadow-sm border border-slate-200">
           <div class="flex flex-col md:flex-row justify-between items-center gap-6">
             <div class="flex-1 w-full">
@@ -451,7 +558,7 @@ onMounted(fetchModels)
             </div>
             <button
               @click="runComparison"
-              :disabled="!selectedFiles || compareLoading"
+              :disabled="!compareFile || compareLoading"
               class="px-8 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 text-white font-bold rounded-xl shadow-lg shadow-blue-200 transition-all flex items-center gap-2"
             >
               <span v-if="compareLoading" class="animate-spin">⏳</span>
@@ -459,8 +566,24 @@ onMounted(fetchModels)
             </button>
           </div>
 
-          <div v-if="!selectedFiles" class="mt-6 text-center p-8 border-2 border-dashed border-slate-200 rounded-2xl cursor-pointer hover:bg-slate-50" @click="$refs.fileInput.click()">
-            <p class="text-slate-400 font-bold">请先在“实时检测”页面上传一张图片</p>
+          <div class="mt-6">
+            <div
+              class="relative group border-2 border-dashed border-slate-200 rounded-2xl p-6 transition-all hover:border-blue-400 hover:bg-blue-50/50 text-center cursor-pointer"
+              @click="$refs.compareInput.click()"
+            >
+              <input type="file" ref="compareInput" class="hidden" @change="onCompareFileChange" accept="image/*" />
+              <div v-if="!compareFile" class="flex flex-col items-center gap-2">
+                <span class="text-2xl">📸</span>
+                <p class="text-sm font-bold text-slate-400">点击上传对比图片</p>
+              </div>
+              <div v-else class="flex items-center justify-center gap-4">
+                <img :src="comparePreviewUrl" class="h-16 w-16 object-cover rounded-lg border border-slate-200" />
+                <div class="text-left">
+                  <p class="text-sm font-bold text-slate-700">已选择: {{ compareFile.name }}</p>
+                  <p class="text-xs text-blue-500 font-bold">点击更换</p>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -471,9 +594,24 @@ onMounted(fetchModels)
               <span class="font-bold text-slate-700">模型 A 结果</span>
               <span class="text-xs font-mono bg-blue-100 text-blue-700 px-2 py-1 rounded">{{ compareStatsA.time }}ms</span>
             </div>
-            <div class="aspect-video bg-slate-900 rounded-2xl border border-slate-800 flex items-center justify-center overflow-hidden">
+            <div
+              class="aspect-video bg-slate-900 rounded-2xl border border-slate-800 flex items-center justify-center overflow-hidden cursor-zoom-in"
+              @click="openLightbox(compareResultA)"
+            >
               <img v-if="compareResultA" :src="compareResultA" class="h-full object-contain" />
               <div v-else class="text-slate-600">Waiting...</div>
+            </div>
+
+            <!-- 缺陷清单 A -->
+            <div class="bg-white rounded-2xl border border-slate-200 p-4">
+              <h4 class="text-xs font-bold text-slate-400 uppercase mb-3">缺陷识别清单 ({{ compareStatsA.count }})</h4>
+              <div class="space-y-2 max-h-40 overflow-y-auto">
+                <div v-for="(det, idx) in compareDetectionsA" :key="idx" class="flex justify-between text-xs p-2 bg-slate-50 rounded">
+                  <span class="font-bold text-slate-700">{{ det.class_cn }}</span>
+                  <span class="font-mono text-blue-600">{{ (det.confidence * 100).toFixed(0) }}%</span>
+                </div>
+                <div v-if="compareDetectionsA.length === 0" class="text-center text-xs text-slate-400 italic">无检测结果</div>
+              </div>
             </div>
           </div>
 
@@ -483,12 +621,32 @@ onMounted(fetchModels)
               <span class="font-bold text-slate-700">模型 B 结果</span>
               <span class="text-xs font-mono bg-green-100 text-green-700 px-2 py-1 rounded">{{ compareStatsB.time }}ms</span>
             </div>
-            <div class="aspect-video bg-slate-900 rounded-2xl border border-slate-800 flex items-center justify-center overflow-hidden">
+            <div
+              class="aspect-video bg-slate-900 rounded-2xl border border-slate-800 flex items-center justify-center overflow-hidden cursor-zoom-in"
+              @click="openLightbox(compareResultB)"
+            >
               <img v-if="compareResultB" :src="compareResultB" class="h-full object-contain" />
               <div v-else class="text-slate-600">Waiting...</div>
             </div>
+
+            <!-- 缺陷清单 B -->
+            <div class="bg-white rounded-2xl border border-slate-200 p-4">
+              <h4 class="text-xs font-bold text-slate-400 uppercase mb-3">缺陷识别清单 ({{ compareStatsB.count }})</h4>
+              <div class="space-y-2 max-h-40 overflow-y-auto">
+                <div v-for="(det, idx) in compareDetectionsB" :key="idx" class="flex justify-between text-xs p-2 bg-slate-50 rounded">
+                  <span class="font-bold text-slate-700">{{ det.class_cn }}</span>
+                  <span class="font-mono text-green-600">{{ (det.confidence * 100).toFixed(0) }}%</span>
+                </div>
+                <div v-if="compareDetectionsB.length === 0" class="text-center text-xs text-slate-400 italic">无检测结果</div>
+              </div>
+            </div>
           </div>
         </div>
+      </div>
+
+      <!-- ==================== 历史记录视图 ==================== -->
+      <div v-else-if="currentTab === 'history'">
+        <History :username="currentUser" />
       </div>
 
     </main>
@@ -517,5 +675,15 @@ select {
   background-position: right 0.75rem center;
   background-size: 1em;
   padding-right: 2.5rem;
+}
+
+.slide-up-enter-active,
+.slide-up-leave-active {
+  transition: transform 0.5s ease-in-out;
+}
+
+.slide-up-enter-from,
+.slide-up-leave-to {
+  transform: translateY(-100%);
 }
 </style>

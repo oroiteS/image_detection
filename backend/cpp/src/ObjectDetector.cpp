@@ -6,7 +6,7 @@
 
 ObjectDetector::ObjectDetector() {
     CHECK_CUDA(cudaStreamCreate(&m_cudaStream));
-    m_maxBatchSize = MAX_BATCH_SIZE; // 使用 cuda_utils.hpp 中定义的最大 Batch
+    m_maxBatchSize = MAX_BATCH_SIZE;
 }
 
 ObjectDetector::~ObjectDetector() {
@@ -36,16 +36,14 @@ bool ObjectDetector::init(const std::string& onnxPath, const std::string& engine
     m_inputDims = m_engine->getTensorShape(m_engine->getIOTensorName(0));
     m_outputDims = m_engine->getTensorShape(m_engine->getIOTensorName(1));
 
-    // 计算输入大小 (按最大 Batch 分配)
     m_inputSize = m_maxBatchSize;
     for(int i=0; i<m_inputDims.nbDims; ++i) {
         int dim = m_inputDims.d[i];
-        if (dim < 0) dim = (i == 0) ? 1 : 640; // 动态维度处理
+        if (dim < 0) dim = (i == 0) ? 1 : 640;
         m_inputSize *= dim;
     }
     m_inputSize *= sizeof(float);
 
-    // 计算原始输出大小 (按最大 Batch 分配)
     size_t outputElements = m_maxBatchSize;
     for(int i=0; i<m_outputDims.nbDims; ++i) {
         int dim = m_outputDims.d[i];
@@ -57,8 +55,6 @@ bool ObjectDetector::init(const std::string& onnxPath, const std::string& engine
 
     CHECK_CUDA(cudaMalloc(&m_cudaInputBuffer, m_inputSize));
     CHECK_CUDA(cudaMalloc(&m_cudaOutputBuffer, m_outputSize));
-
-    // 分配解码缓冲区 (BatchOutputBuffer 已经包含了 MAX_BATCH_SIZE 的定义)
     CHECK_CUDA(cudaMalloc(&m_cudaDecodeBuffer, sizeof(BatchOutputBuffer)));
 
     m_context = std::shared_ptr<nvinfer1::IExecutionContext>(m_engine->createExecutionContext());
@@ -92,7 +88,6 @@ bool ObjectDetector::buildEngine(const std::string& onnxPath, const std::string&
 
     auto input = network->getInput(0);
 
-    // === 1. 推理用的 Optimization Profile (支持多 Batch) ===
     auto profile = builder->createOptimizationProfile();
     profile->setDimensions(input->getName(), nvinfer1::OptProfileSelector::kMIN, nvinfer1::Dims4{1, 3, 640, 640});
     profile->setDimensions(input->getName(), nvinfer1::OptProfileSelector::kOPT, nvinfer1::Dims4{m_maxBatchSize > 1 ? m_maxBatchSize/2 : 1, 3, 640, 640});
@@ -107,17 +102,51 @@ bool ObjectDetector::buildEngine(const std::string& onnxPath, const std::string&
     if (useInt8 && builder->platformHasFastInt8()) {
         config->setFlag(nvinfer1::BuilderFlag::kINT8);
 
-        // === 2. 关键修复：设置 Calibration Profile (强制 Batch=1) ===
-        // 如果不设置，TensorRT 可能会尝试使用上面的 profile (kOPT=8) 进行校准，导致内存越界
         auto calibProfile = builder->createOptimizationProfile();
         calibProfile->setDimensions(input->getName(), nvinfer1::OptProfileSelector::kMIN, nvinfer1::Dims4{1, 3, 640, 640});
         calibProfile->setDimensions(input->getName(), nvinfer1::OptProfileSelector::kOPT, nvinfer1::Dims4{1, 3, 640, 640});
         calibProfile->setDimensions(input->getName(), nvinfer1::OptProfileSelector::kMAX, nvinfer1::Dims4{1, 3, 640, 640});
         config->setCalibrationProfile(calibProfile);
-        // ========================================================
 
         calibrator = std::make_unique<Int8Calibrator>(1, calibDataDir, enginePath + ".calib", 640, 640);
         config->setInt8Calibrator(calibrator.get());
+
+        std::cout << "Applying Layer Fallback strategy for INT8..." << std::endl;
+        for (int i = 0; i < network->getNbLayers(); ++i) {
+            auto layer = network->getLayer(i);
+            std::string layerName = layer->getName();
+
+            // 关键修复：跳过 Shape Layer 和 INT32 输出层
+            if (layer->getType() == nvinfer1::LayerType::kSHAPE ||
+                layer->getType() == nvinfer1::LayerType::kCONSTANT) {
+                continue;
+            }
+
+            // 检查输出类型
+            bool isInt32Output = false;
+            for (int j = 0; j < layer->getNbOutputs(); ++j) {
+                if (layer->getOutput(j)->getType() == nvinfer1::DataType::kINT32) {
+                    isInt32Output = true;
+                    break;
+                }
+            }
+            if (isInt32Output) continue;
+
+            // 策略：如果层名称包含 "detect" 或 "cv2" (YOLO Head 常用名)，或者是输出层的前置层
+            // 则强制使用 FP16。
+            if (layerName.find("detect") != std::string::npos ||
+                layerName.find("cv2") != std::string::npos ||
+                layerName.find("cv3") != std::string::npos ||
+                layerName.find("dfl") != std::string::npos ||
+                layer->getType() == nvinfer1::LayerType::kNON_ZERO) {
+
+                layer->setPrecision(nvinfer1::DataType::kHALF);
+                // 显式设置输出类型为 FP16，避免 TensorRT 自动推断错误
+                for (int k = 0; k < layer->getNbOutputs(); ++k) {
+                    layer->setOutputType(k, nvinfer1::DataType::kHALF);
+                }
+            }
+        }
     }
 
     std::unique_ptr<nvinfer1::IHostMemory> plan{builder->buildSerializedNetwork(*network, *config)};
@@ -150,61 +179,47 @@ bool ObjectDetector::loadEngine(const std::string& enginePath) {
 std::vector<std::vector<Detection>> ObjectDetector::detect(const std::vector<cv::Mat>& images, float confThreshold, float nmsThreshold) {
     int batchSize = images.size();
     if (batchSize == 0) return {};
-    if (batchSize > m_maxBatchSize) {
-        std::cerr << "Batch size " << batchSize << " exceeds max batch size " << m_maxBatchSize << std::endl;
-        return {};
-    }
+    if (batchSize > m_maxBatchSize) return {};
 
-    // 1. 设置 Input Shape (动态 Batch)
     if (m_inputDims.d[0] == -1) {
         m_context->setInputShape(m_engine->getIOTensorName(0), nvinfer1::Dims4{batchSize, 3, 640, 640});
     }
 
-    // 2. 预处理 (多张图片)
-    // 计算实际需要的输入大小
     size_t currentInputSize = batchSize * 3 * 640 * 640 * sizeof(float);
     std::vector<float> hostInput(currentInputSize / sizeof(float));
 
-    // 确保传入正确的维度
     nvinfer1::Dims4 inputDims{batchSize, 3, 640, 640};
     preprocess(images, hostInput.data(), inputDims);
 
-    // 3. 拷贝到 GPU (异步)
     CHECK_CUDA(cudaMemcpyAsync(m_cudaInputBuffer, hostInput.data(), currentInputSize, cudaMemcpyHostToDevice, m_cudaStream));
 
-    // 4. 推理 (异步)
     if (!m_context->enqueueV3(m_cudaStream)) {
         std::cerr << "Inference failed." << std::endl;
         return {};
     }
 
-    // 5. 调用 CUDA Kernel 进行解码
     int inputW = 640;
     int inputH = 640;
-    // 假设所有图片尺寸相同，取第一张计算 scale
-    // 如果图片尺寸不同，这里需要更复杂的处理 (例如传入 scale 数组到 Kernel)
     float scale = std::min((float)inputW / images[0].cols, (float)inputH / images[0].rows);
 
-    int numChannels = m_outputDims.d[1]; // 8
-    int numAnchors = m_outputDims.d[2];  // 8400
-    int numClasses = numChannels - 4;    // 4
+    int numChannels = m_outputDims.d[1];
+    int numAnchors = m_outputDims.d[2];
+    int numClasses = numChannels - 4;
 
     launch_yolo_decode(
         (float*)m_cudaOutputBuffer,
         m_cudaDecodeBuffer,
-        batchSize, // 传入当前 Batch Size
+        batchSize,
         numAnchors, numChannels, numClasses,
         confThreshold, scale, inputW, inputH,
         m_cudaStream
     );
 
-    // 6. 拷贝解码结果回 Host
     BatchOutputBuffer hostOutput;
     CHECK_CUDA(cudaMemcpyAsync(&hostOutput, m_cudaDecodeBuffer, sizeof(BatchOutputBuffer), cudaMemcpyDeviceToHost, m_cudaStream));
 
     cudaStreamSynchronize(m_cudaStream);
 
-    // 7. 后处理 (NMS)
     return postprocess(hostOutput, batchSize, nmsThreshold);
 }
 
@@ -251,7 +266,6 @@ std::vector<std::vector<Detection>> ObjectDetector::postprocess(const BatchOutpu
         int count = std::min(gpuOutput.counts[b], MAX_DETECTIONS);
 
         for (int i = 0; i < count; ++i) {
-            // 访问第 b 个 Batch 的第 i 个结果
             const auto& det = gpuOutput.detections[b * MAX_DETECTIONS + i];
 
             int x = static_cast<int>(det.x1);
